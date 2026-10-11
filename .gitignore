@@ -1,0 +1,38 @@
+# Release artifacts and private build inputs
+build/
+iso/
+rc2-ext4/
+*.iso
+*.img
+*.qcow2
+*.vdi
+*.vmdk
+*.tar.gz
+*.tar.xz
+*.zip
+*.log
+*.bak
+*.backup
+# Sensitive materials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+id_rsa
+id_ed25519
+.secrets/
+credentials/
+backups/
+# Local caches
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+.pytest_cache/
+.mypy_cache/
+.DS_Store
