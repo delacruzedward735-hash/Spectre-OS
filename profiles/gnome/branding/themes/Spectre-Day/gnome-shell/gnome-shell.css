@@ -1,0 +1,323 @@
+/* Spectre Day — GNOME Shell 48
+ * Native light surface treatment with Spectre blue identity.
+ */
+@import url("resource:///org/gnome/shell/theme/gnome-shell.css");
+
+stage {
+    font-family: Cantarell, Sans-Serif;
+    color: #172235;
+}
+
+#panel {
+    background-color: rgba(246, 249, 253, 0.94);
+    border-bottom: 1px solid rgba(27, 103, 190, 0.18);
+    box-shadow: 0 6px 22px rgba(40, 65, 100, 0.12);
+    height: 40px;
+    color: #18283e;
+}
+#panel .panel-button {
+    color: #18283e;
+    font-weight: 650;
+    border-radius: 12px;
+    margin: 4px 2px;
+    padding: 0 8px;
+    transition-duration: 140ms;
+}
+#panel .panel-button:hover,
+#panel .panel-button:active,
+#panel .panel-button:checked,
+#panel .panel-button:focus {
+    background-color: rgba(29, 124, 226, 0.11);
+    box-shadow: inset 0 0 0 1px rgba(29, 124, 226, 0.13);
+}
+#panelActivities { width: 0; min-width: 0; padding: 0; margin: 0; opacity: 0; }
+.panel-status-indicators-box, .panel-status-menu-box { spacing: 7px; }
+
+.popup-menu-content,
+.candidate-popup-content,
+.quick-settings,
+.message-list,
+.calendar,
+.datemenu-calendar-column {
+    background-color: rgba(250, 252, 255, 0.96);
+    color: #172235;
+    border: 1px solid rgba(43, 102, 169, 0.16);
+    border-radius: 20px;
+    box-shadow: 0 16px 44px rgba(38, 62, 94, 0.18);
+    padding: 8px;
+}
+.popup-menu-item {
+    border-radius: 12px;
+    color: #24364f;
+    padding: 8px 10px;
+    transition-duration: 120ms;
+}
+.popup-menu-item:hover,
+.popup-menu-item:focus,
+.popup-menu-item:selected {
+    background-color: rgba(28, 123, 226, 0.11);
+    color: #0f4f93;
+}
+.popup-separator-menu-item .popup-separator-menu-item-separator { background-color: rgba(70, 105, 145, 0.14); }
+
+.quick-toggle,
+.quick-menu-toggle .quick-toggle,
+.quick-menu-toggle .quick-toggle-arrow {
+    background-color: rgba(233, 239, 247, 0.94);
+    color: #26384f;
+    border-radius: 15px;
+    transition-duration: 140ms;
+}
+.quick-toggle:hover,
+.quick-menu-toggle .quick-toggle:hover { background-color: rgba(220, 231, 244, 0.98); }
+.quick-toggle:checked,
+.quick-menu-toggle .quick-toggle:checked {
+    background-color: #1682e8;
+    color: white;
+    box-shadow: inset 0 0 0 1px rgba(54, 160, 245, 0.28);
+}
+
+.dash-background,
+.dashtodockContainer .dash-background {
+    background-color: rgba(246, 250, 255, 0.83);
+    border: 1px solid rgba(45, 113, 184, 0.18);
+    border-radius: 22px;
+    box-shadow: 0 14px 38px rgba(31, 57, 88, 0.18);
+}
+.dash-item-container .app-well-app-running-dot { background-color: #1682e8; }
+.app-well-app .overview-icon { border-radius: 15px; transition-duration: 140ms; }
+.app-well-app:hover .overview-icon,
+.app-well-app:focus .overview-icon,
+.app-well-app:selected .overview-icon {
+    background-color: rgba(21, 126, 232, 0.10);
+    box-shadow: inset 0 0 0 1px rgba(32, 123, 214, 0.13);
+}
+
+.search-entry {
+    background-color: rgba(250, 252, 255, 0.96);
+    color: #172235;
+    border: 1px solid rgba(41, 108, 180, 0.19);
+    border-radius: 18px;
+    padding: 10px 15px;
+    box-shadow: 0 10px 30px rgba(40, 65, 100, 0.14);
+}
+.search-entry:focus {
+    border-color: rgba(27, 126, 226, 0.70);
+    box-shadow: 0 0 0 2px rgba(21, 126, 232, 0.12);
+}
+.workspace-thumbnail-indicator { border: 2px solid #1682e8; border-radius: 11px; }
+.workspace-switcher-container {
+    background-color: rgba(250, 252, 255, 0.96);
+    border: 1px solid rgba(43, 102, 169, 0.16);
+    border-radius: 20px;
+    box-shadow: 0 14px 36px rgba(38, 62, 94, 0.16);
+}
+.notification-banner, .message {
+    background-color: rgba(250, 252, 255, 0.97);
+    color: #172235;
+    border: 1px solid rgba(43, 102, 169, 0.16);
+    border-radius: 18px;
+    box-shadow: 0 12px 34px rgba(38, 62, 94, 0.17);
+}
+.modal-dialog, .prompt-dialog {
+    background-color: #f8fbff;
+    color: #172235;
+    border: 1px solid rgba(43, 102, 169, 0.18);
+    border-radius: 22px;
+    box-shadow: 0 20px 54px rgba(38, 62, 94, 0.20);
+}
+.calendar-day-base:selected,
+.calendar-day-base:hover,
+.calendar-day-base:focus { background-color: rgba(20, 126, 232, 0.13); border-radius: 10px; }
+.osd-window, .switcher-list, .resize-popup {
+    background-color: rgba(250, 252, 255, 0.96);
+    color: #172235;
+    border: 1px solid rgba(43, 102, 169, 0.17);
+    border-radius: 20px;
+    box-shadow: 0 14px 38px rgba(38, 62, 94, 0.18);
+}
+.window-caption { color: #172235; background-color: rgba(250, 252, 255, 0.96); border-radius: 11px; padding: 6px 10px; }
+
+/* RC5.5 — readable nested Quick Settings / power-session menus in light mode. */
+.popup-menu .popup-sub-menu,
+.quick-settings .popup-sub-menu,
+.quick-settings .popup-menu-content,
+.quick-settings-system-item .popup-menu-content {
+    background-color: rgba(248, 251, 255, 0.99);
+    color: #172235;
+    border-color: rgba(43, 102, 169, 0.20);
+}
+.popup-menu .popup-sub-menu .popup-menu-item,
+.quick-settings .popup-menu-item,
+.quick-settings-system-item .popup-menu-item,
+.quick-settings .popup-menu-item StLabel,
+.quick-settings-system-item .popup-menu-item StLabel,
+.popup-menu .popup-inactive-menu-item {
+    color: #26384f;
+}
+.popup-menu .popup-sub-menu .popup-menu-item:hover,
+.popup-menu .popup-sub-menu .popup-menu-item:focus,
+.popup-menu .popup-sub-menu .popup-menu-item:selected,
+.quick-settings .popup-menu-item:hover,
+.quick-settings .popup-menu-item:focus,
+.quick-settings .popup-menu-item:selected {
+    background-color: rgba(28, 123, 226, 0.12);
+    color: #0b4f96;
+}
+.popup-menu .popup-sub-menu .popup-menu-item:insensitive,
+.quick-settings .popup-menu-item:insensitive,
+.quick-settings-system-item .popup-menu-item:insensitive {
+    color: rgba(38, 56, 79, 0.48);
+}
+.popup-menu .popup-sub-menu .popup-separator-menu-item-separator,
+.quick-settings .popup-separator-menu-item .popup-separator-menu-item-separator {
+    background-color: rgba(70, 105, 145, 0.17);
+}
+
+
+/* RC5.6 — GNOME 48 QuickToggleMenu/power-session contrast hardening. */
+.quick-toggle-menu,
+.quick-toggle-menu .popup-menu-content,
+.quick-toggle-menu .popup-sub-menu,
+.quick-settings-system-item .popup-sub-menu {
+    background-color: rgba(248, 251, 255, 0.995);
+    color: #172235;
+    border-color: rgba(43, 102, 169, 0.20);
+}
+.quick-toggle-menu .popup-menu-item,
+.quick-toggle-menu .popup-menu-item StLabel,
+.quick-settings-system-item .popup-sub-menu .popup-menu-item,
+.quick-settings-system-item .popup-sub-menu .popup-menu-item StLabel {
+    color: #26384f;
+}
+.quick-toggle-menu .popup-menu-item:hover,
+.quick-toggle-menu .popup-menu-item:focus,
+.quick-toggle-menu .popup-menu-item:selected,
+.quick-settings-system-item .popup-sub-menu .popup-menu-item:hover,
+.quick-settings-system-item .popup-sub-menu .popup-menu-item:focus {
+    background-color: rgba(28, 123, 226, 0.12);
+    color: #0b4f96;
+}
+.quick-toggle-menu .popup-menu-item:insensitive,
+.quick-settings-system-item .popup-sub-menu .popup-menu-item:insensitive {
+    color: rgba(38, 56, 79, 0.48);
+}
+.quick-toggle-menu .popup-separator-menu-item .popup-separator-menu-item-separator {
+    background-color: rgba(70, 105, 145, 0.17);
+}
+
+/* SPECTRE_DIALOG_CONTRAST_V2 — GNOME 48 dialog readability. */
+.end-session-dialog,
+.end-session-dialog StLabel,
+.modal-dialog StLabel,
+.prompt-dialog StLabel {
+    color: #172235;
+}
+
+.modal-dialog-button,
+.modal-dialog-linked-button,
+.modal-dialog .button,
+.prompt-dialog .button,
+.end-session-dialog .button {
+    color: #172235;
+    background-color: rgba(236, 243, 251, 0.98);
+    border: 1px solid rgba(43, 102, 169, 0.24);
+    box-shadow: none;
+}
+
+.modal-dialog-button:hover,
+.modal-dialog-linked-button:hover,
+.modal-dialog .button:hover,
+.prompt-dialog .button:hover,
+.end-session-dialog .button:hover,
+.modal-dialog-button:focus,
+.modal-dialog-linked-button:focus {
+    color: #0b1728;
+    background-color: rgba(204, 226, 249, 0.98);
+}
+
+.modal-dialog-button:insensitive,
+.modal-dialog-linked-button:insensitive,
+.modal-dialog .button:insensitive,
+.end-session-dialog .button:insensitive {
+    color: rgba(23, 34, 53, 0.48);
+    background-color: rgba(235, 241, 248, 0.76);
+}
+
+/* SPECTRE_RC57_LIGHT_POLKIT_V1 — light-only GNOME Shell prompt/dialog polish.
+ * Preserve the real Shell polkit agent: CSS changes appearance only.
+ */
+.prompt-dialog {
+    background-color: #f8fbff;
+    color: #172b43;
+    border: 1px solid rgba(62, 114, 168, 0.26);
+    border-radius: 19px;
+    box-shadow: 0 22px 55px rgba(26, 50, 81, 0.24);
+}
+.prompt-dialog .message-dialog-title {
+    color: #17263d;
+    font-weight: 800;
+    font-size: 14pt;
+}
+.prompt-dialog .message-dialog-description,
+.prompt-dialog .prompt-dialog-info-label,
+.prompt-dialog .polkit-dialog-user-label {
+    color: #344b66;
+}
+.prompt-dialog .prompt-dialog-error-label { color: #a11f3b; }
+.prompt-dialog .polkit-dialog-user-root-label { color: #9a3a10; }
+.prompt-dialog .polkit-dialog-user-icon {
+    border-radius: 99px;
+    background-color: #e9f2fb;
+}
+.prompt-dialog .prompt-dialog-password-entry,
+.prompt-dialog StEntry {
+    color: #14243a;
+    background-color: #ffffff;
+    border: 1px solid #96b5da;
+    border-radius: 10px;
+    box-shadow: none;
+    padding: 8px 10px;
+}
+.prompt-dialog .prompt-dialog-password-entry:focus,
+.prompt-dialog StEntry:focus {
+    color: #14243a;
+    background-color: #ffffff;
+    border-color: #147bde;
+    box-shadow: inset 0 0 0 1px rgba(20, 123, 222, 0.32);
+}
+.prompt-dialog .modal-dialog-button,
+.prompt-dialog .modal-dialog-linked-button,
+.prompt-dialog .button {
+    color: #1c344f;
+    background-color: #e9f1fa;
+    border: 1px solid #b2cce9;
+    border-radius: 10px;
+    box-shadow: none;
+}
+.prompt-dialog .modal-dialog-button:hover,
+.prompt-dialog .modal-dialog-linked-button:hover,
+.prompt-dialog .button:hover,
+.prompt-dialog .modal-dialog-button:focus {
+    color: #0c3f78;
+    background-color: #d7e9fb;
+    border-color: #79ace3;
+}
+.prompt-dialog .modal-dialog-button:insensitive,
+.prompt-dialog .modal-dialog-linked-button:insensitive,
+.prompt-dialog .button:insensitive {
+    color: #778ba2;
+    background-color: #edf3f9;
+    border-color: #d1dfea;
+}
+
+/* Preserve contrast for actual system status icons. Do not override Spectre
+ * Insight/Settings icons: the Stage 1 HUD extension owns their own colors. */
+#panel .panel-button .system-status-icon,
+#panel .panel-status-menu-box .system-status-icon {
+    color: #20374f;
+}
+#panel .panel-button:hover .system-status-icon,
+#panel .panel-button:focus .system-status-icon {
+    color: #0b5da8;
+}

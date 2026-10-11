@@ -1,0 +1,229 @@
+/* Spectre Panel 0.9 — restrained neon glass */
+.spectre-logo-button,
+.spectre-terminal-button,
+.spectre-workspace-button {
+    margin: 4px 2px;
+    border-radius: 12px;
+    color: #edf7ff;
+    transition-duration: 140ms;
+}
+
+.spectre-logo-button { padding: 0 8px; }
+
+.spectre-logo-button:hover,
+.spectre-terminal-button:hover,
+.spectre-workspace-button:hover {
+    background-color: rgba(26, 139, 255, 0.16);
+    box-shadow: inset 0 0 0 1px rgba(71, 190, 255, 0.20);
+}
+
+.spectre-logo-icon { margin: 0 1px; }
+
+.spectre-panel-app-button {
+    spacing: 7px;
+    padding: 0 3px;
+}
+
+.spectre-panel-app-icon { color: #58c7ff; }
+
+.spectre-panel-label {
+    font-weight: 700;
+    padding: 0 5px 0 0;
+}
+
+.spectre-workspace-button {
+    min-width: 31px;
+    padding: 0 2px;
+    font-weight: 800;
+}
+
+.spectre-workspace-label { min-width: 19px; }
+
+.spectre-workspace-active {
+    background-color: #147ee8;
+    box-shadow: inset 0 0 0 1px rgba(117, 214, 255, 0.62), 0 3px 12px rgba(0, 114, 255, 0.24);
+    color: white;
+}
+
+/* Spectre Hub */
+.spectre-hub-header-item,
+.spectre-quick-grid-item,
+.spectre-info-card-item {
+    padding: 0;
+    margin: 0;
+}
+
+.spectre-hub-header {
+    spacing: 14px;
+    padding: 15px 16px 11px 16px;
+}
+
+.spectre-hub-logo { margin-right: 2px; }
+.spectre-hub-title-box { spacing: 2px; }
+
+.spectre-hub-title {
+    font-size: 15.5pt;
+    font-weight: 900;
+    color: #f5f9ff;
+}
+
+.spectre-hub-subtitle {
+    font-size: 8.5pt;
+    font-weight: 700;
+    color: #54c7ff;
+}
+
+.spectre-quick-grid {
+    spacing: 8px;
+    padding: 5px 12px 12px 12px;
+}
+
+.spectre-quick-button {
+    min-width: 70px;
+    padding: 10px 8px;
+    border-radius: 14px;
+    background-color: rgba(15, 31, 55, 0.80);
+    border: 1px solid rgba(78, 162, 255, 0.15);
+    color: #eaf4ff;
+    transition-duration: 140ms;
+}
+
+.spectre-quick-button:hover,
+.spectre-quick-button:focus {
+    background-color: rgba(20, 126, 232, 0.24);
+    border-color: rgba(87, 200, 255, 0.40);
+    box-shadow: 0 5px 15px rgba(0, 91, 200, 0.20);
+}
+
+.spectre-quick-button-box { spacing: 6px; }
+.spectre-quick-icon { color: #5bcaff; }
+.spectre-quick-label { font-size: 9pt; font-weight: 700; }
+
+.spectre-info-card {
+    margin: 0 12px 10px 12px;
+    padding: 11px 12px;
+    spacing: 3px;
+    border-radius: 13px;
+    background-color: rgba(3, 11, 24, 0.72);
+    border: 1px solid rgba(88, 175, 255, 0.13);
+}
+
+.spectre-info-primary { font-weight: 750; color: #ecf5ff; }
+.spectre-info-secondary { font-size: 9pt; color: #86a3c4; }
+
+/* Spectre Applications search — keeps the classic category menu until typing */
+.spectre-app-search-item {
+    padding: 10px 12px 8px 12px;
+}
+
+.spectre-app-search-entry {
+    min-height: 38px;
+    padding: 0 12px;
+    border-radius: 13px;
+    color: #f4f8ff;
+    background-color: rgba(4, 12, 26, 0.82);
+    border: 1px solid rgba(71, 178, 255, 0.25);
+    box-shadow: inset 0 0 0 1px rgba(0, 106, 255, 0.06);
+    selection-background-color: #147ee8;
+    selected-color: #ffffff;
+}
+
+.spectre-app-search-entry:focus {
+    background-color: rgba(6, 18, 38, 0.94);
+    border-color: rgba(73, 196, 255, 0.72);
+    box-shadow: 0 0 0 1px rgba(29, 157, 255, 0.18), 0 5px 18px rgba(0, 82, 190, 0.20);
+}
+
+.spectre-app-search-icon {
+    color: #58c9ff;
+}
+
+.spectre-app-search-results-item {
+    padding: 0 8px 9px 8px;
+}
+
+.spectre-app-search-results {
+    spacing: 3px;
+}
+
+.spectre-app-search-result {
+    padding: 8px 10px;
+    border-radius: 11px;
+    color: #eef7ff;
+    transition-duration: 120ms;
+}
+
+.spectre-app-search-result:hover,
+.spectre-app-search-result:focus {
+    background-color: rgba(20, 126, 232, 0.22);
+    box-shadow: inset 0 0 0 1px rgba(87, 200, 255, 0.25);
+}
+
+.spectre-app-search-result-row {
+    spacing: 11px;
+}
+
+.spectre-app-search-result-icon {
+    color: #66d4ff;
+}
+
+.spectre-app-search-result-labels {
+    spacing: 1px;
+}
+
+.spectre-app-search-result-name {
+    font-weight: 700;
+    color: #f2f8ff;
+}
+
+.spectre-app-search-result-description {
+    font-size: 8.5pt;
+    color: #8fa9c7;
+}
+
+.spectre-app-search-empty {
+    spacing: 7px;
+    padding: 20px 12px 18px 12px;
+    color: #87a5c5;
+}
+
+/* RC5.1: extension-owned panel content follows Spectre Day instead of keeping
+ * dark hard-coded surfaces when GNOME Dark Style is disabled. */
+#panel.spectre-light-mode .spectre-logo-button,
+#panel.spectre-light-mode .spectre-terminal-button,
+#panel.spectre-light-mode .spectre-workspace-button { color: #18283e; }
+#panel.spectre-light-mode .spectre-panel-label { color: #18283e; }
+#panel.spectre-light-mode .spectre-hub-title { color: #172235; }
+#panel.spectre-light-mode .spectre-hub-subtitle,
+#panel.spectre-light-mode .spectre-quick-icon,
+#panel.spectre-light-mode .spectre-panel-app-icon { color: #1682e8; }
+#panel.spectre-light-mode .spectre-quick-button {
+    color: #24364f;
+    background-color: rgba(234, 241, 249, 0.95);
+    border-color: rgba(43, 111, 182, 0.14);
+}
+#panel.spectre-light-mode .spectre-quick-button:hover,
+#panel.spectre-light-mode .spectre-quick-button:focus {
+    color: #0f4f93;
+    background-color: rgba(28, 123, 226, 0.11);
+}
+#panel.spectre-light-mode .spectre-info-card {
+    background-color: rgba(244, 248, 253, 0.95);
+    border-color: rgba(43, 111, 182, 0.13);
+}
+#panel.spectre-light-mode .spectre-info-primary,
+#panel.spectre-light-mode .spectre-app-search-result-name { color: #172235; }
+#panel.spectre-light-mode .spectre-info-secondary,
+#panel.spectre-light-mode .spectre-app-search-result-description,
+#panel.spectre-light-mode .spectre-app-search-empty { color: #657c97; }
+#panel.spectre-light-mode .spectre-app-search-entry {
+    color: #172235;
+    background-color: rgba(250, 252, 255, 0.97);
+    border-color: rgba(43, 111, 182, 0.18);
+    selection-background-color: #1682e8;
+}
+#panel.spectre-light-mode .spectre-app-search-result { color: #172235; }
+#panel.spectre-light-mode .spectre-app-search-result:hover,
+#panel.spectre-light-mode .spectre-app-search-result:focus {
+    background-color: rgba(28, 123, 226, 0.11);
+}

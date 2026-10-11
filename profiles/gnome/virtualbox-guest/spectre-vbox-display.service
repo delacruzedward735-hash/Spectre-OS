@@ -1,0 +1,17 @@
+[Unit]
+Description=Spectre VirtualBox Guest Additions userspace (no external kernel module build)
+Documentation=https://docs.oracle.com/en/virtualization/virtualbox/7.0/user/guestadditions.html
+ConditionVirtualization=oracle
+ConditionPathExists=/dev/vboxguest
+ConditionPathExists=/opt/VBoxGuestAdditions-7.0.16/init/vboxadd-service
+After=systemd-udev-trigger.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=60
+ExecStart=/opt/VBoxGuestAdditions-7.0.16/init/vboxadd-service start
+ExecStop=/opt/VBoxGuestAdditions-7.0.16/init/vboxadd-service stop
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Spectre Files launcher — stable GNOME/Nautilus activation path for clicks,
+# Super+E and every Spectre-owned Files surface.
+set -u
+
+notify_failure() {
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send 'Spectre Files' 'Unable to start the file manager.' >/dev/null 2>&1 || true
+    fi
+}
+
+target="${1:-$HOME}"
+
+# Prefer desktop/GApplication activation instead of creating arbitrary Nautilus
+# processes. This cooperates with GNOME's existing org.gnome.Nautilus D-Bus
+# service and works for both an already-running Files instance and a cold start.
+if command -v gtk-launch >/dev/null 2>&1 && \
+   [[ -f /usr/share/applications/org.gnome.Nautilus.desktop ]]; then
+    if gtk-launch org.gnome.Nautilus "$target" >/dev/null 2>&1; then
+        exit 0
+    fi
+fi
+
+# GIO is the standards-based fallback and also handles file:// URIs correctly.
+if command -v gio >/dev/null 2>&1; then
+    if gio open "$target" >/dev/null 2>&1; then
+        exit 0
+    fi
+fi
+
+# Last-resort direct launch. Keep it foreground-independent so the caller
+# (GNOME Shell, shortcut service or a Spectre utility) never blocks on Nautilus.
+if command -v nautilus >/dev/null 2>&1; then
+    nohup nautilus --new-window "$target" >/dev/null 2>&1 &
+    exit 0
+fi
+
+notify_failure
+exit 1

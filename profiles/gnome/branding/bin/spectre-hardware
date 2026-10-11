@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -u
+
+section(){ printf '\n== %s ==\n' "$1"; }
+run(){ printf '$ %s\n' "$*"; "$@" 2>&1 || true; }
+
+printf 'Spectre Hardware Report\n'
+printf 'Generated: %s\n' "$(date --iso-8601=seconds 2>/dev/null || date)"
+printf 'Kernel: %s\n' "$(uname -r)"
+printf 'Session: %s / %s\n' "${XDG_CURRENT_DESKTOP:-unknown}" "${XDG_SESSION_TYPE:-unknown}"
+
+section 'CPU'
+if command -v lscpu >/dev/null 2>&1; then
+  lscpu | grep -E '^(Architecture|CPU\(s\)|Model name|Vendor ID|Virtualization|CPU max MHz|CPU min MHz):' || true
+else
+  printf 'lscpu unavailable\n'
+fi
+
+section 'Graphics and drivers'
+if command -v lspci >/dev/null 2>&1; then
+  lspci -nnk | awk '
+    /VGA compatible controller|3D controller|Display controller/ {show=1; print; next}
+    show && /^[[:space:]]+(Subsystem|Kernel driver in use|Kernel modules):/ {print; next}
+    show && !/^[[:space:]]/ {show=0}
+  '
+fi
+if command -v glxinfo >/dev/null 2>&1 && [[ -n "${DISPLAY:-}" ]]; then
+  glxinfo -B 2>/dev/null | grep -E 'OpenGL vendor string|OpenGL renderer string|OpenGL core profile version string|OpenGL version string' || true
+fi
+if systemctl is-active --quiet switcheroo-control.service 2>/dev/null; then
+  printf 'Hybrid GPU service: active\n'
+else
+  printf 'Hybrid GPU service: inactive/not required\n'
+fi
+
+section 'Memory and swap'
+free -h 2>/dev/null || true
+if [[ -x /usr/sbin/swapon ]]; then /usr/sbin/swapon --show 2>/dev/null || true; elif [[ -x /sbin/swapon ]]; then /sbin/swapon --show 2>/dev/null || true; else cat /proc/swaps 2>/dev/null || true; fi
+command -v zramctl >/dev/null 2>&1 && zramctl 2>/dev/null || true
+
+section 'Storage'
+lsblk -o NAME,TYPE,SIZE,FSTYPE,LABEL,MOUNTPOINTS,MODEL,TRAN 2>/dev/null || lsblk 2>/dev/null || true
+if command -v nvme >/dev/null 2>&1; then nvme list 2>/dev/null || true; fi
+
+section 'Network'
+if command -v nmcli >/dev/null 2>&1; then
+  nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null || true
+fi
+if command -v lspci >/dev/null 2>&1; then
+  lspci -nnk | awk '
+    /Ethernet controller|Network controller/ {show=1; print; next}
+    show && /^[[:space:]]+(Subsystem|Kernel driver in use|Kernel modules):/ {print; next}
+    show && !/^[[:space:]]/ {show=0}
+  '
+fi
+
+section 'USB'
+if command -v lsusb >/dev/null 2>&1; then lsusb || true; else printf 'lsusb unavailable\n'; fi
+
+section 'Audio'
+if command -v wpctl >/dev/null 2>&1; then wpctl status 2>/dev/null | sed -n '1,90p' || true; fi
+
+section 'Bluetooth'
+if command -v rfkill >/dev/null 2>&1; then rfkill list bluetooth 2>/dev/null || true; fi
+if command -v bluetoothctl >/dev/null 2>&1; then bluetoothctl show 2>/dev/null | grep -E 'Controller|Powered:|Discoverable:|Pairable:' || true; fi
+
+section 'Power and battery'
+if command -v powerprofilesctl >/dev/null 2>&1; then
+  printf 'Power profile: %s\n' "$(powerprofilesctl get 2>/dev/null || echo unknown)"
+fi
+for b in /sys/class/power_supply/BAT*; do
+  [[ -d "$b" ]] || continue
+  printf '%s: capacity=%s%% status=%s\n' "$(basename "$b")" "$(cat "$b/capacity" 2>/dev/null || echo '?')" "$(cat "$b/status" 2>/dev/null || echo unknown)"
+done
+
+section 'Input devices'
+if [[ -r /proc/bus/input/devices ]]; then
+  grep -E '^N: Name=|^H: Handlers=' /proc/bus/input/devices | grep -Ei 'touchpad|mouse|keyboard|Handlers=' | head -60 || true
+fi
+
+section 'Firmware mode and firmware warnings'
+[[ -d /sys/firmware/efi ]] && printf 'Boot firmware: UEFI\n' || printf 'Boot firmware: Legacy BIOS\n'
+if command -v journalctl >/dev/null 2>&1; then
+  fw_warn="$(journalctl -k -b --no-pager 2>/dev/null | grep -Ei 'firmware.*(failed|missing|error)' | tail -20 || true)"
+  [[ -n "$fw_warn" ]] && printf '%s\n' "$fw_warn" || printf 'No obvious firmware load failures in current boot log.\n'
+fi

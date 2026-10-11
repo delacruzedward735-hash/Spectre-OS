@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -u
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/spectre/installed-qualification"
+STATE_FILE="$STATE_DIR/state"
+MARKER_DIR="$HOME/Documents/Spectre-QA"
+MARKER_FILE="$MARKER_DIR/persistence-marker.txt"
+
+ok(){ printf '[OK]   %s\n' "$*"; }
+warn(){ printf '[WARN] %s\n' "$*"; }
+fail(){ printf '[FAIL] %s\n' "$*"; return 1; }
+
+require_installed(){
+  [[ -f /etc/spectre-installation ]] || { fail 'This is not marked as an installed Spectre system.'; return 1; }
+  if findmnt -rn /run/live/medium >/dev/null 2>&1 || findmnt -rn /lib/live/mount/medium >/dev/null 2>&1; then
+    fail 'A Spectre live medium is mounted. Boot the installed disk without the ISO first.'
+    return 1
+  fi
+  local src fs opts
+  src="$(findmnt -nro SOURCE / 2>/dev/null || true)"
+  fs="$(findmnt -nro FSTYPE / 2>/dev/null || true)"
+  opts="$(findmnt -nro OPTIONS / 2>/dev/null || true)"
+  [[ "$src" == /dev/* && "$fs" != overlay ]] || { fail "Root is not an installed block filesystem: source=${src:-unknown} fs=${fs:-unknown}"; return 1; }
+  [[ ",$opts," == *,rw,* ]] || { fail 'Installed root filesystem is not mounted read-write.'; return 1; }
+}
+
+state_get(){
+  local key="$1"
+  sed -n "s/^${key}=//p" "$STATE_FILE" 2>/dev/null | head -1
+}
+
+root_uuid(){
+  local src
+  src="$(findmnt -nro SOURCE / 2>/dev/null || true)"
+  [[ "$src" == /dev/* ]] && blkid -s UUID -o value "$src" 2>/dev/null || true
+}
+
+run_health(){
+  local rc=0
+  if command -v spectre-installed-health >/dev/null 2>&1; then
+    spectre-installed-health || rc=1
+  else
+    fail 'spectre-installed-health is missing'; rc=1
+  fi
+  echo
+  if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] && command -v spectre-shell-health >/dev/null 2>&1; then
+    spectre-shell-health || rc=1
+  else
+    warn 'GNOME shell health skipped because no graphical user session was detected.'
+  fi
+  return "$rc"
+}
+
+prepare(){
+  require_installed || exit 1
+  echo '[Spectre] Installed-system persistence qualification — prepare'
+  echo
+  run_health || { echo; fail 'Baseline health must pass before persistence qualification.'; exit 1; }
+
+  mkdir -p "$STATE_DIR" "$MARKER_DIR"
+  chmod 0700 "$STATE_DIR"
+  token="$(python3 - <<'PY'
+import secrets
+print(secrets.token_hex(24))
+PY
+)"
+  boot_id="$(cat /proc/sys/kernel/random/boot_id)"
+  machine_id="$(cat /etc/machine-id)"
+  uuid="$(root_uuid)"
+  build="$(sed -n 's/^RUNTIME_SOURCE_SHA256=//p' /etc/spectre-build 2>/dev/null | head -1)"
+  now="$(date -Is)"
+  printf '%s\n' "$token" > "$MARKER_FILE"
+  chmod 0600 "$MARKER_FILE"
+  marker_hash="$(sha256sum "$MARKER_FILE" | awk '{print $1}')"
+
+  cat > "$STATE_FILE" <<STATE
+PREPARED_AT=$now
+PREPARED_BOOT_ID=$boot_id
+LAST_VERIFIED_BOOT_ID=$boot_id
+MACHINE_ID=$machine_id
+ROOT_UUID=$uuid
+RUNTIME_SOURCE_SHA256=$build
+MARKER_SHA256=$marker_hash
+REBOOT_PASSES=0
+STATE
+  chmod 0600 "$STATE_FILE"
+  sync
+
+  echo
+  ok "persistent marker created: $MARKER_FILE"
+  ok "baseline boot ID: $boot_id"
+  ok "root UUID: ${uuid:-unknown}"
+  echo
+  echo 'Next: reboot the installed OS, log back in, then run:'
+  echo '  spectre-installed-qualification verify'
+  echo 'A second successful reboot/verify cycle is required for the RC5.0 gate.'
+}
+
+verify(){
+  require_installed || exit 1
+  [[ -f "$STATE_FILE" && -f "$MARKER_FILE" ]] || { fail 'No qualification state exists. Run: spectre-installed-qualification prepare'; exit 1; }
+  echo '[Spectre] Installed-system persistence qualification — verify'
+  echo
+
+  rc=0
+  current_boot="$(cat /proc/sys/kernel/random/boot_id)"
+  previous_boot="$(state_get LAST_VERIFIED_BOOT_ID)"
+  expected_machine="$(state_get MACHINE_ID)"
+  expected_uuid="$(state_get ROOT_UUID)"
+  expected_build="$(state_get RUNTIME_SOURCE_SHA256)"
+  expected_marker="$(state_get MARKER_SHA256)"
+  passes="$(state_get REBOOT_PASSES)"
+  [[ "$passes" =~ ^[0-9]+$ ]] || passes=0
+
+  if [[ "$current_boot" != "$previous_boot" ]]; then ok 'boot ID changed: this is a new boot'; else fail 'boot ID did not change; reboot before verifying'; rc=1; fi
+  [[ "$(cat /etc/machine-id 2>/dev/null)" == "$expected_machine" ]] && ok 'machine-id persisted' || { fail 'machine-id changed unexpectedly'; rc=1; }
+  [[ "$(root_uuid)" == "$expected_uuid" ]] && ok 'root filesystem UUID persisted' || { fail 'root filesystem UUID changed unexpectedly'; rc=1; }
+  current_build="$(sed -n 's/^RUNTIME_SOURCE_SHA256=//p' /etc/spectre-build 2>/dev/null | head -1)"
+  [[ "$current_build" == "$expected_build" ]] && ok 'runtime source provenance persisted' || { fail 'runtime source provenance changed'; rc=1; }
+  current_marker="$(sha256sum "$MARKER_FILE" 2>/dev/null | awk '{print $1}')"
+  [[ "$current_marker" == "$expected_marker" ]] && ok 'user persistence marker survived reboot unchanged' || { fail 'persistence marker is missing or changed'; rc=1; }
+
+  echo
+  run_health || rc=1
+
+  if command -v nmcli >/dev/null 2>&1; then
+    nm_state="$(nmcli -t -f STATE general 2>/dev/null | head -1 || true)"
+    if [[ "$nm_state" == connected* ]]; then ok 'NetworkManager reports connected networking'; else warn "NetworkManager state: ${nm_state:-unknown}"; fi
+  fi
+
+  if ((rc == 0)); then
+    passes=$((passes+1))
+    tmp="$STATE_FILE.tmp"
+    awk -F= -v bid="$current_boot" -v p="$passes" '
+      BEGIN{OFS="="}
+      $1=="LAST_VERIFIED_BOOT_ID"{$2=bid}
+      $1=="REBOOT_PASSES"{$2=p}
+      {print}
+    ' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+    chmod 0600 "$STATE_FILE"
+    echo
+    ok "reboot persistence pass $passes/2"
+    if ((passes >= 2)); then
+      echo
+      echo '[PASS] Spectre installed-system persistence qualification completed.'
+      echo '       Two distinct reboot cycles preserved the installed root, machine identity, user data and runtime health.'
+    else
+      echo 'Reboot once more, log back in, then run the same verify command again.'
+    fi
+  else
+    echo
+    echo '[FAIL] Installed-system qualification found blocking issue(s).'
+    exit 1
+  fi
+}
+
+status(){
+  require_installed || exit 1
+  echo '[Spectre] Installed-system persistence qualification — status'
+  if [[ ! -f "$STATE_FILE" ]]; then
+    echo 'State: not started'
+    echo 'Run: spectre-installed-qualification prepare'
+    exit 0
+  fi
+  cat "$STATE_FILE"
+  if [[ -f "$MARKER_FILE" ]]; then
+    printf 'MARKER=%s\n' "$MARKER_FILE"
+  else
+    echo 'MARKER=missing'
+  fi
+}
+
+reset(){
+  rm -rf "$STATE_DIR" "$MARKER_DIR"
+  echo '[ok] Spectre installed-system qualification state removed.'
+}
+
+case "${1:-status}" in
+  prepare) prepare ;;
+  verify) verify ;;
+  status) status ;;
+  reset) reset ;;
+  *)
+    echo 'Usage: spectre-installed-qualification {prepare|verify|status|reset}' >&2
+    exit 2
+    ;;
+esac

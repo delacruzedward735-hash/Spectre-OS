@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Spectre Shortcuts
+Comment=View and restore Spectre keyboard shortcuts
+Exec=/usr/local/bin/spectre-shortcuts
+Icon=input-keyboard-symbolic
+Terminal=false
+Categories=Settings;Utility;
+Keywords=keyboard;shortcuts;windows;keys;
+StartupNotify=true

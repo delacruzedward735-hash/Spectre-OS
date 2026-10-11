@@ -1,0 +1,48 @@
+.spectre-desktop-context-menu .popup-menu-content {
+    min-width: 238px;
+    background-color: rgb(3, 11, 24);
+    border: none;
+    border-radius: 18px;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+    padding: 7px;
+}
+
+.spectre-desktop-context-menu .popup-menu-item {
+    border-radius: 11px;
+    padding: 8px 10px;
+    transition-duration: 140ms;
+}
+
+.spectre-desktop-context-menu .popup-menu-item:hover,
+.spectre-desktop-context-menu .popup-menu-item:focus,
+.spectre-desktop-context-menu .popup-menu-item:selected {
+    background-color: rgba(30, 132, 239, 0.20);
+}
+
+/* Match DING: group spacing without visible divider strokes. */
+.spectre-desktop-context-menu .popup-separator-menu-item .popup-separator-menu-item-separator {
+    background-color: transparent;
+    min-height: 5px;
+}
+
+/* Light-mode override. The extension follows GNOME color-scheme at runtime,
+ * so the desktop menu never remains dark after Dark Style is disabled. */
+.spectre-desktop-context-menu-light .popup-menu-content {
+    background-color: rgb(250, 252, 255);
+    color: #172235;
+    border: none;
+    box-shadow: 0 18px 44px rgba(38, 62, 94, 0.18);
+}
+.spectre-desktop-context-menu-light .popup-menu-item {
+    color: #24364f;
+}
+.spectre-desktop-context-menu-light .popup-menu-item:hover,
+.spectre-desktop-context-menu-light .popup-menu-item:focus,
+.spectre-desktop-context-menu-light .popup-menu-item:selected {
+    color: #0f4f93;
+    background-color: rgba(28, 123, 226, 0.11);
+}
+.spectre-desktop-context-menu-light .popup-separator-menu-item .popup-separator-menu-item-separator {
+    background-color: transparent;
+    min-height: 5px;
+}

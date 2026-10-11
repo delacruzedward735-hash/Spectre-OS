@@ -1,0 +1,12 @@
+{
+  "uuid": "spectre-desktop-menu@spectre.os",
+  "name": "Spectre Desktop Menu",
+  "description": "Safe desktop context menu for refresh, folders, terminal, display and taskbar settings.",
+  "shell-version": [
+    "48"
+  ],
+  "version": 2,
+  "session-modes": [
+    "user"
+  ]
+}

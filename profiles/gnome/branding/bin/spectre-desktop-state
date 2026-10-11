@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Spectre Desktop State — RC5.6
+set -u
+DING='ding@rastersoft.com'
+FALLBACK='spectre-desktop-menu@spectre.os'
+MARKER="$HOME/.config/spectre/desktop-unified-rc56-fastdesktop-v1"
+has_schema(){ gsettings list-schemas 2>/dev/null | grep -Fxq "$1"; }
+has_key(){ has_schema "$1" && gsettings list-keys "$1" 2>/dev/null | grep -Fxq "$2"; }
+ext_available(){ gnome-extensions info "$1" >/dev/null 2>&1; }
+ext_active(){ gnome-extensions list --enabled 2>/dev/null | grep -Fxq "$1"; }
+set_bool(){ has_key "$1" "$2" && gsettings set "$1" "$2" "$3" >/dev/null 2>&1 || true; }
+migrate(){
+    mkdir -p "$HOME/.config/spectre"
+    if ext_available "$DING"; then
+        gnome-extensions enable "$DING" >/dev/null 2>&1 || true
+    fi
+    # RC5.6 uses the Shell menu only as a fallback for background regions not
+    # currently covered by DING (for example during a QEMU display resize).
+    # Its own hit testing refuses normal windows, the panel and the taskbar.
+    if ext_available "$FALLBACK"; then
+        gnome-extensions enable "$FALLBACK" >/dev/null 2>&1 || true
+    fi
+    if [[ ! -f "$MARKER" ]]; then
+        set_bool org.gnome.shell.extensions.ding show-home false
+        set_bool org.gnome.shell.extensions.ding show-trash false
+        set_bool org.gnome.shell.extensions.ding show-volumes false
+        set_bool org.gnome.shell.extensions.ding show-network-volumes false
+        touch "$MARKER"
+    fi
+}
+status(){
+    printf 'Spectre Desktop provider\n'
+    printf '  DING installed: %s\n' "$(ext_available "$DING" && echo yes || echo no)"
+    printf '  DING active:    %s\n' "$(ext_active "$DING" && echo yes || echo no)"
+    printf '  Shell fallback: %s\n' "$(ext_active "$FALLBACK" && echo active || echo inactive)"
+    if has_key org.gnome.shell.extensions.ding show-home; then printf '  Show Home:      %s\n' "$(gsettings get org.gnome.shell.extensions.ding show-home 2>/dev/null || echo unknown)"; fi
+    if has_key org.gnome.shell.extensions.ding show-trash; then printf '  Show Trash:     %s\n' "$(gsettings get org.gnome.shell.extensions.ding show-trash 2>/dev/null || echo unknown)"; fi
+    if has_key org.gnome.shell.extensions.ding show-volumes; then printf '  Show Volumes:   %s\n' "$(gsettings get org.gnome.shell.extensions.ding show-volumes 2>/dev/null || echo unknown)"; fi
+    if has_key org.gnome.shell.extensions.ding show-network-volumes; then printf '  Network Vols:   %s\n' "$(gsettings get org.gnome.shell.extensions.ding show-network-volumes 2>/dev/null || echo unknown)"; fi
+}
+case "${1:---migrate}" in
+  --migrate|--ensure) migrate ;;
+  --status) status ;;
+  *) echo 'usage: spectre-desktop-state [--migrate|--status]' >&2; exit 2 ;;
+esac

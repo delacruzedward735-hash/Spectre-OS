@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Spectre Desktop State
+Comment=Keep the Spectre desktop provider consistent
+Exec=/usr/local/bin/spectre-desktop-state --migrate
+OnlyShowIn=GNOME;
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Phase=Initialization

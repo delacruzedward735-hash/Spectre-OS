@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Spectre Live Installer Setup
+Comment=Make the Spectre installer easy to find in the live session
+Exec=/usr/local/bin/spectre-live-installer-setup
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=3
+OnlyShowIn=GNOME;

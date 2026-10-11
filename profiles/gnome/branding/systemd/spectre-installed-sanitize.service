@@ -1,0 +1,13 @@
+[Unit]
+Description=Remove live-installer artifacts from installed Spectre OS
+ConditionPathExists=/etc/spectre-installation
+After=local-fs.target
+Before=gdm3.service gdm.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/spectre-installed-sanitize
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

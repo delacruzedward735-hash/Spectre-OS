@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+mode="${1:-status}"
+case "$mode" in
+  status)
+    echo 'Spectre Recovery Status'
+    echo '======================='
+    if [[ -x /etc/grub.d/42_spectre_recovery ]]; then echo '[OK] Recovery generator installed'; else echo '[WARN] Recovery generator missing'; fi
+    if [[ -s /boot/grub/grub.cfg ]]; then
+      grep -F "Spectre OS — Safe Graphics" /boot/grub/grub.cfg >/dev/null 2>&1 && echo '[OK] Safe Graphics entry present' || echo '[WARN] Safe Graphics entry missing'
+      grep -F "Spectre OS — Diagnostics (text mode)" /boot/grub/grub.cfg >/dev/null 2>&1 && echo '[OK] Diagnostics entry present' || echo '[WARN] Diagnostics entry missing'
+    else
+      echo '[WARN] /boot/grub/grub.cfg unavailable'
+    fi
+    echo
+    echo 'Press Esc during the early GRUB boot window to show recovery entries.'
+    ;;
+  rebuild)
+    echo 'Rebuilding Spectre GRUB configuration requires administrator privileges.'
+    exec sudo update-grub
+    ;;
+  previous-boot)
+    exec journalctl -b -1 --no-pager
+    ;;
+  current-boot)
+    exec journalctl -b --no-pager -p warning
+    ;;
+  *) echo 'Usage: spectre-recovery {status|rebuild|previous-boot|current-boot}' >&2; exit 2 ;;
+esac

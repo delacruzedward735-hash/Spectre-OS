@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Welcome to Spectre
+Comment=Learn about Spectre OS and open common system tools
+Exec=spectre-welcome
+Icon=spectre-logo
+Terminal=false
+Categories=System;Settings;
+Keywords=Spectre;Welcome;About;System;
+StartupNotify=true

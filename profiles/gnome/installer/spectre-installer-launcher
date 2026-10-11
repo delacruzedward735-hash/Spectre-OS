@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -u
+TITLE="Spectre OS Installer"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/spectre"
+LOG="$CACHE_DIR/installer-launcher.log"
+mkdir -p "$CACHE_DIR" 2>/dev/null || true
+# SPECTRE_INSTALLER_LAUNCH_DIAGNOSTICS_V2
+log(){ printf '[%s] %s\n' "$(date -Is 2>/dev/null || date)" "$*" >> "$LOG" 2>/dev/null || true; }
+notify_error(){
+  log "ERROR: $1"
+
+  command -v notify-send >/dev/null 2>&1 &&
+    notify-send \
+      --app-name="Spectre OS" \
+      --urgency=critical \
+      "$TITLE" "$1" >/dev/null 2>&1 || true
+
+  command -v zenity >/dev/null 2>&1 &&
+    zenity \
+      --error \
+      --title="$TITLE" \
+      --text="$1
+
+Diagnostic log: $LOG" >/dev/null 2>&1 || true
+}
+
+log "launch requested uid=$(id -u) display=${DISPLAY:-unset} wayland=${WAYLAND_DISPLAY:-unset} session=${XDG_SESSION_TYPE:-unset}"
+log "desktop-entry=$(grep -m1 '^Exec=' /usr/share/applications/com.spectre.Installer.desktop 2>/dev/null || echo missing)"
+log "live-run=$([[ -f /run/live/medium/live/filesystem.squashfs ]] && echo yes || echo no) live-lib=$([[ -f /lib/live/mount/medium/live/filesystem.squashfs ]] && echo yes || echo no)"
+log "pkexec=$(command -v pkexec 2>/dev/null || echo missing) backend=$([[ -x /usr/local/sbin/spectre-installer-backend ]] && echo yes || echo no)"
+[[ -x /usr/local/sbin/spectre-installer ]] || { log 'installer UI missing'; notify_error 'The Spectre installer UI is missing. Rebuild or verify the ISO.'; exit 127; }
+[[ -x /usr/local/sbin/spectre-installer-backend ]] || { log 'installer backend missing'; notify_error 'The Spectre installer backend is missing. Rebuild or verify the ISO.'; exit 127; }
+if [[ ! -f /run/live/medium/live/filesystem.squashfs && ! -f /lib/live/mount/medium/live/filesystem.squashfs ]]; then
+  log 'not running from Spectre live media'; notify_error 'Install Spectre OS can only run from the Spectre live USB/ISO session.'; exit 2
+fi
+if pgrep -f '^/usr/local/sbin/spectre-installer([[:space:]]|$)' >/dev/null 2>&1; then
+  log 'installer already running'; command -v notify-send >/dev/null 2>&1 && notify-send --app-name="Spectre OS" "$TITLE" 'The installer is already running.' >/dev/null 2>&1 || true; exit 0
+fi
+# RC3 keeps the entire wizard in the normal GNOME user session. Only the final
+# validated install plan is elevated by pkexec inside the UI.
+/usr/local/sbin/spectre-installer "$@" >>"$LOG" 2>&1
+rc=$?
+log "installer UI exited rc=$rc"
+((rc==0)) || notify_error "The installer stopped unexpectedly (code $rc). See $LOG"
+exit "$rc"

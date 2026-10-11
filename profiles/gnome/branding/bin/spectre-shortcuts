@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+"""Spectre keyboard shortcut guide and reset surface."""
+from __future__ import annotations
+import subprocess
+import gi
+gi.require_version('Gtk','4.0'); gi.require_version('Adw','1')
+from gi.repository import Adw, Gtk
+APP_ID='com.spectre.Shortcuts'
+GROUPS={
+ 'Everyday':[('Super + D / Super + M','Show / restore desktop'),('Super + E','Files'),('Super + I','Spectre Center'),('Super + R','Run'),('Super + S','Search / Overview'),('Super + L','Lock PC'),('Super + X','Power User menu'),('Super + V','Clipboard history'),('Super + A','Applications'),('Super + N','Notifications'),('Super + U','Accessibility'),('Ctrl + Shift + Esc','System Monitor'),('Ctrl + Alt + T','Terminal'),('Super + Pause','System information'),('Alt + F4','Close window'),('Alt + Space','Window menu')],
+ 'Windows &amp; workspaces':[('Super + Left / Right','Tile left / right half; combine with Up/Down for corner quarter'),('Super + Up / Down','Tile top / bottom half; combine with Left/Right for corner quarter'),('Shift + Super + Up','Maximize'),('Shift + Super + Down','Restore'),('Super + Tab','Task View / Overview'),('Alt + Tab','Switch windows'),('Ctrl + Super + Left / Right','Switch virtual desktop'),('Ctrl + Shift + Super + Left / Right','Move window to virtual desktop'),('Shift + Super + Left / Right','Move window to another monitor'),('Super + Space','Switch keyboard / input language'),('F11','Toggle fullscreen')],
+ 'Devices &amp; capture':[('Super + P','Displays / projection'),('Super + K','Bluetooth'),('Print Screen','Screenshot UI'),('Super + Shift + S','Screenshot region UI'),('Super + Print Screen','Capture full screen'),('Alt + Print Screen','Capture current window'),('Super + Alt + R','Start / stop screen recording when supported')],
+ 'Taskbar':[('Super + 1 … 9','Activate matching taskbar app')],
+}
+class App(Adw.Application):
+ def __init__(self): super().__init__(application_id=APP_ID)
+ def do_activate(self):
+  if self.props.active_window: self.props.active_window.present(); return
+  w=Adw.ApplicationWindow(application=self,title='Spectre Shortcuts'); w.set_default_size(760,760)
+  tv=Adw.ToolbarView(); hb=Adw.HeaderBar(); hb.set_title_widget(Adw.WindowTitle(title='Keyboard & Shortcuts',subtitle='Windows-familiar Spectre defaults')); tv.add_top_bar(hb)
+  reset=Gtk.Button(label='Reset Spectre Defaults'); reset.add_css_class('suggested-action'); reset.connect('clicked',self._reset); hb.pack_end(reset)
+  sc=Gtk.ScrolledWindow(); box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=18); box.set_margin_top(18); box.set_margin_bottom(18); box.set_margin_start(18); box.set_margin_end(18)
+  self.status=Gtk.Label(label='Spectre applies these defaults once. Your later customizations are preserved.'); self.status.set_xalign(0); self.status.add_css_class('dim-label'); box.append(self.status)
+  for name,items in GROUPS.items():
+   g=Adw.PreferencesGroup(title=name)
+   for keys,action in items:
+    r=Adw.ActionRow(title=action,subtitle=keys); k=Gtk.Label(label=keys); k.add_css_class('caption'); r.add_suffix(k); g.add(r)
+   box.append(g)
+  sc.set_child(box); tv.set_content(sc); w.set_content(tv); w.present(); self.win=w
+ def _reset(self,*_):
+  rc=subprocess.run(['/usr/local/bin/spectre-shortcut-defaults','--force']).returncode
+  self.status.set_text('Spectre shortcut defaults restored.' if rc==0 else 'Unable to restore shortcut defaults.')
+if __name__=='__main__': raise SystemExit(App().run(None))

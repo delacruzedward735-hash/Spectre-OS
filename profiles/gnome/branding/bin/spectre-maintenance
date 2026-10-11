@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -u
+
+[[ -f /etc/spectre-installation ]] || exit 0
+if findmnt -rn /run/live/medium >/dev/null 2>&1 || findmnt -rn /lib/live/mount/medium >/dev/null 2>&1; then exit 0; fi
+
+log(){ printf '[Spectre Maintenance] %s\n' "$*"; }
+log 'Starting safe maintenance pass.'
+
+if command -v systemd-tmpfiles >/dev/null 2>&1; then
+  systemd-tmpfiles --clean 2>/dev/null || true
+  log 'Temporary-file cleanup complete.'
+fi
+if command -v journalctl >/dev/null 2>&1; then
+  journalctl --vacuum-size=256M >/dev/null 2>&1 || true
+  log 'Journal storage bounded to the Spectre policy.'
+fi
+if command -v fstrim >/dev/null 2>&1; then
+  fstrim -av 2>/dev/null || true
+  log 'TRIM attempted on supported mounted filesystems.'
+fi
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get clean >/dev/null 2>&1 || true
+  log 'Package download cache cleaned.'
+fi
+log 'Maintenance pass complete.'

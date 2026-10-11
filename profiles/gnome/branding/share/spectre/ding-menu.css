@@ -1,0 +1,91 @@
+/* Spectre RC5.7 — DING 48 GTK3 desktop context menu.
+ * Scoped to DING's native desktop background Gtk.Menu. The classes are set
+ * from org.gnome.desktop.interface color-scheme inside the DING process.
+ * File-item and other application menus retain their regular GTK theme.
+ */
+window.popup decoration,
+window.csd.popup decoration {
+    border: none;
+    box-shadow: none;
+}
+
+/* GTK3 popups can otherwise retain an opaque square behind a rounded menu. */
+window.popup {
+    background-color: transparent;
+    background-image: none;
+}
+
+menu.spectre-desktop-menu {
+    background-image: none;
+    border-radius: 13px;
+    border-style: solid;
+    border-width: 1px;
+    box-shadow: 0 12px 28px alpha(black, 0.22);
+    padding: 5px 0;
+}
+menu.spectre-desktop-menu.spectre-menu-dark {
+    background-color: #0a1628;
+    color: #eff6ff;
+    border-color: #25486c;
+}
+menu.spectre-desktop-menu.spectre-menu-light {
+    background-color: #dce6f2;
+    color: #20334c;
+    border-color: #6f8eaf;
+    box-shadow: none;
+}
+
+menu.spectre-desktop-menu menuitem {
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    box-shadow: none;
+    border-radius: 8px;
+    padding: 6px 13px;
+    margin: 1px 5px;
+}
+menu.spectre-desktop-menu.spectre-menu-dark menuitem {
+    color: #eff6ff;
+}
+menu.spectre-desktop-menu.spectre-menu-light menuitem {
+    color: #20334c;
+}
+menu.spectre-desktop-menu.spectre-menu-dark menuitem:hover,
+menu.spectre-desktop-menu.spectre-menu-dark menuitem:selected,
+menu.spectre-desktop-menu.spectre-menu-dark menuitem:focus {
+    color: #ffffff;
+    background-color: #184779;
+}
+menu.spectre-desktop-menu.spectre-menu-light menuitem:hover,
+menu.spectre-desktop-menu.spectre-menu-light menuitem:selected,
+menu.spectre-desktop-menu.spectre-menu-light menuitem:focus {
+    color: #0a4684;
+    background-color: #dfecfa;
+}
+menu.spectre-desktop-menu.spectre-menu-dark menuitem:disabled {
+    color: #8c9eb5;
+}
+menu.spectre-desktop-menu.spectre-menu-light menuitem:disabled {
+    color: #8393a8;
+}
+menu.spectre-desktop-menu separator,
+menu.spectre-desktop-menu menuitem.separator {
+    background-color: transparent;
+    border: none;
+    min-height: 4px;
+    margin: 0 5px;
+    padding: 0;
+}
+
+/* SPECTRE_FINAL_POPUP_CLEANUP_V1 */
+window.background.popup,
+window.popup.background,
+window.popup,
+window.csd.popup,
+window.csd.popup.background {
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    outline: none;
+    box-shadow: none;
+}

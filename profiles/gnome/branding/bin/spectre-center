@@ -1,0 +1,376 @@
+#!/usr/bin/env python3
+"""Spectre Center — daily-use control surface for Spectre OS."""
+import os
+import platform
+import subprocess
+import sys
+from pathlib import Path
+
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gdk, Gio, Gtk
+
+APP_ID = "com.spectre.Center"
+SETTINGS_SCHEMA = "org.spectre.desktop"
+WEBSITE = "https://myportfoliohub.online"
+
+
+def spawn(*argv):
+    try:
+        subprocess.Popen(argv, start_new_session=True)
+    except OSError as exc:
+        print(f"Unable to launch {argv[0]}: {exc}", file=sys.stderr)
+
+
+def terminal(command):
+    spawn("gnome-terminal", "--", "bash", "-lc", command)
+
+
+def output(*argv, default="Unavailable"):
+    try:
+        return subprocess.check_output(argv, text=True, stderr=subprocess.DEVNULL).strip() or default
+    except Exception:
+        return default
+
+
+def shell(command, default="Unavailable"):
+    return output("bash", "-lc", command, default=default)
+
+
+def read_os_release():
+    data = {}
+    try:
+        for line in Path("/etc/os-release").read_text().splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                data[key] = value.strip().strip('"')
+    except OSError:
+        pass
+    return data
+
+
+def memory_summary():
+    try:
+        values = {}
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            key, value = line.split(":", 1)
+            values[key] = int(value.strip().split()[0])
+        total = values.get("MemTotal", 0)
+        available = values.get("MemAvailable", 0)
+        used = max(total - available, 0)
+        if total:
+            return f"{used / 1024 / 1024:.1f} / {total / 1024 / 1024:.1f} GiB"
+    except Exception:
+        pass
+    return "Unavailable"
+
+
+def cpu_model():
+    return shell("lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -1", platform.machine())
+
+
+def gpu_model():
+    return shell("lspci | grep -m1 -E 'VGA compatible controller|3D controller|Display controller' | sed 's/^[^:]*: //'", "Unavailable")
+
+
+def root_storage():
+    return shell("df -h --output=size,used,avail / | tail -1 | xargs | sed 's/ / total • /; s/ / used • /'", "Unavailable")
+
+
+def battery_summary():
+    for battery in Path("/sys/class/power_supply").glob("BAT*") if Path("/sys/class/power_supply").exists() else []:
+        try:
+            cap = (battery / "capacity").read_text().strip()
+            state = (battery / "status").read_text().strip()
+            return f"{cap}% • {state}"
+        except OSError:
+            pass
+    return "No battery detected"
+
+
+def firmware_mode():
+    return "UEFI" if Path("/sys/firmware/efi").exists() else "Legacy BIOS"
+
+
+def service_state(name):
+    return output("systemctl", "is-active", name, default="inactive")
+
+
+def admin_command(name):
+    for candidate in (Path("/usr/sbin") / name, Path("/usr/bin") / name):
+        if candidate.exists():
+            return str(candidate)
+    return name
+
+
+def firewall_summary():
+    try:
+        text = Path("/etc/ufw/ufw.conf").read_text()
+        if any(line.strip().lower() in {"enabled=yes", "enabled=true"} for line in text.splitlines()):
+            return "Enabled • deny incoming / allow outgoing"
+    except OSError:
+        pass
+    return "Installed but not confirmed enabled" if Path("/usr/sbin/ufw").exists() else "Unavailable"
+
+
+class SpectreCenter(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        self.desktop_settings = Gio.Settings.new(SETTINGS_SCHEMA)
+        self.interface_settings = Gio.Settings.new("org.gnome.desktop.interface")
+        self._syncing_dark_style = False
+
+    def do_activate(self):
+        if self.props.active_window:
+            self.props.active_window.present()
+            return
+        Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.DEFAULT)
+        self._install_css()
+
+        win = Adw.ApplicationWindow(application=self)
+        win.set_title("Spectre Center")
+        win.set_default_size(1040, 760)
+        win.set_size_request(800, 580)
+
+        toolbar = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.set_title_widget(Adw.WindowTitle(title="Spectre Center", subtitle="Desktop • System • Power • Security • Maintenance"))
+        toolbar.add_top_bar(header)
+
+        clamp = Adw.Clamp(maximum_size=1080, tightening_threshold=800)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=22)
+        content.set_margin_top(26)
+        content.set_margin_bottom(38)
+        content.set_margin_start(26)
+        content.set_margin_end(26)
+        clamp.set_child(content)
+
+        content.append(self._hero())
+        content.append(self._quick_actions())
+        content.append(self._desktop_group())
+        content.append(self._system_group())
+        content.append(self._power_security_group())
+        content.append(self._maintenance_group())
+        content.append(self._about_group())
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_child(clamp)
+        toolbar.set_content(scroller)
+        win.set_content(toolbar)
+        win.present()
+
+    def _install_css(self):
+        provider = Gtk.CssProvider()
+        provider.load_from_data(b"""
+        .spectre-hero {
+            background: linear-gradient(120deg, rgba(8,34,70,0.98), rgba(2,10,24,0.98));
+            border: 1px solid rgba(75,185,255,0.25);
+            border-radius: 24px;
+            padding: 26px;
+        }
+        .spectre-hero-title { font-size: 30px; font-weight: 900; color: #f5f9ff; }
+        .spectre-hero-subtitle { font-size: 13px; color: #8ba8c9; }
+        .spectre-chip {
+            background: rgba(20,126,232,0.19);
+            border: 1px solid rgba(91,202,255,0.22);
+            border-radius: 999px;
+            padding: 6px 11px;
+            color: #dff5ff;
+            font-weight: 700;
+        }
+        .spectre-action { border-radius: 18px; min-height: 96px; padding: 13px; }
+        .spectre-action:hover { background: rgba(20,126,232,0.14); }
+        .spectre-action-title { font-weight: 750; }
+        .spectre-action-subtitle { color: alpha(currentColor, 0.68); font-size: 12px; }
+        """)
+        display = Gdk.Display.get_default()
+        if display:
+            Gtk.StyleContext.add_provider_for_display(display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def _hero(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=20)
+        box.add_css_class("spectre-hero")
+        logo = Gtk.Image.new_from_file("/usr/share/pixmaps/spectre-logo.png")
+        logo.set_pixel_size(86)
+        box.append(logo)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        text.set_hexpand(True)
+        title = Gtk.Label(label="SPECTRE CENTER", xalign=0)
+        title.add_css_class("spectre-hero-title")
+        subtitle = Gtk.Label(label="One place for your desktop, hardware, maintenance and system health.", xalign=0)
+        subtitle.add_css_class("spectre-hero-subtitle")
+        subtitle.set_wrap(True)
+        text.append(title); text.append(subtitle)
+        chips = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        for value in (platform.release(), firmware_mode(), os.environ.get("XDG_SESSION_TYPE", "unknown").title()):
+            label = Gtk.Label(label=value)
+            label.add_css_class("spectre-chip")
+            chips.append(label)
+        text.append(chips)
+        box.append(text)
+        return box
+
+    def _action_button(self, icon, title, subtitle, callback):
+        button = Gtk.Button()
+        button.add_css_class("flat")
+        button.add_css_class("spectre-action")
+        button.connect("clicked", callback)
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
+        image = Gtk.Image.new_from_icon_name(icon)
+        image.set_pixel_size(26); image.set_halign(Gtk.Align.START)
+        t = Gtk.Label(label=title, xalign=0); t.add_css_class("spectre-action-title")
+        s = Gtk.Label(label=subtitle, xalign=0); s.set_wrap(True); s.add_css_class("spectre-action-subtitle")
+        inner.append(image); inner.append(t); inner.append(s)
+        button.set_child(inner)
+        return button
+
+    def _quick_actions(self):
+        group = Adw.PreferencesGroup(title="Quick actions")
+        grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True)
+        actions = [
+            ("emblem-ok-symbolic", "System status", "Quick health summary", lambda *_: terminal("spectre-status; echo; read -rp 'Press Enter to close... '")),
+            ("software-update-available-symbolic", "Updates", "Review available updates", lambda *_: spawn("spectre-update-manager")),
+            ("battery-good-symbolic", "Power", "Battery and suspend settings", lambda *_: spawn("gnome-control-center", "power")),
+            ("dialog-information-symbolic", "Support report", "Create a privacy-safe local report", lambda *_: terminal("spectre-support-report; echo; read -rp 'Press Enter to close... '")),
+            ("video-display-symbolic", "Hardware check", "Drivers, graphics, network, audio and firmware", lambda *_: terminal("spectre-hardware-qualification; echo; read -rp 'Press Enter to close... '")),
+            ("system-reboot-symbolic", "Recovery", "Safe Graphics and boot diagnostics", lambda *_: terminal("spectre-recovery status; echo; read -rp 'Press Enter to close... '")),
+        ]
+        for i, args in enumerate(actions):
+            grid.attach(self._action_button(*args), i % 2, i // 2, 1, 1)
+        group.add(grid)
+        return group
+
+    def _desktop_group(self):
+        group = Adw.PreferencesGroup(title="Desktop experience", description="Control the Spectre-specific GNOME layer")
+        for key, title, subtitle, icon in [
+            ("show-hud", "Desktop HUD", "Show live network, CPU, memory and disk cards", "utilities-system-monitor-symbolic"),
+            ("show-network-card", "Network card", "Show live connectivity and network activity", "network-wireless-symbolic"),
+            ("show-system-card", "System card", "Show CPU, memory and filesystem usage", "computer-symbolic"),
+            ("hud-compact", "Compact HUD", "Reduce spacing for smaller displays", "view-compact-symbolic"),
+        ]:
+            row = Adw.SwitchRow(title=title, subtitle=subtitle, icon_name=icon)
+            self.desktop_settings.bind(key, row, "active", Gio.SettingsBindFlags.DEFAULT)
+            group.add(row)
+
+        dark = Adw.SwitchRow(title="Dark Style", subtitle="GNOME-native light/dark application preference", icon_name="weather-clear-night-symbolic")
+        self.dark_style_row = dark
+        self._sync_dark_style()
+        dark.connect("notify::active", self._dark_style_changed)
+        self.interface_settings.connect("changed::color-scheme", lambda *_: self._sync_dark_style())
+        group.add(dark)
+
+        for title, subtitle, icon, cmd in [
+            ("Spectre Taskbar", "Smart hide, position, icon size, motion and opacity", "view-grid-symbolic", ("spectre-taskbar-settings",)),
+            ("Desktop Apps & Icons", "Pin apps to the desktop or taskbar and enable full desktop file behavior", "user-desktop-symbolic", ("spectre-desktop-apps",)),
+            ("Keyboard & Shortcuts", "Windows-familiar Spectre shortcuts and reset controls", "input-keyboard-symbolic", ("spectre-shortcuts",)),
+            ("Appearance & Wallpapers", "Spectre wallpaper collection and GNOME appearance settings", "preferences-desktop-wallpaper-symbolic", ("gnome-control-center", "appearance")),
+            ("Restore Spectre Default Wallpaper", "Re-enable automatic light/dark Spectre wallpaper pairing", "preferences-desktop-wallpaper-symbolic", ("spectre-appearance-sync", "--reset-wallpaper")),
+        ]:
+            row = Adw.ActionRow(title=title, subtitle=subtitle, icon_name=icon, activatable=True)
+            row.connect("activated", lambda _r, c=cmd: spawn(*c))
+            group.add(row)
+        return group
+
+    def _sync_dark_style(self):
+        if not hasattr(self, "dark_style_row"):
+            return
+        self._syncing_dark_style = True
+        try:
+            self.dark_style_row.set_active(self.interface_settings.get_string("color-scheme") == "prefer-dark")
+        finally:
+            self._syncing_dark_style = False
+
+    def _dark_style_changed(self, row, _pspec):
+        if self._syncing_dark_style:
+            return
+        self.interface_settings.set_string("color-scheme", "prefer-dark" if row.get_active() else "default")
+        spawn("spectre-appearance-sync", "--once")
+
+    def _system_group(self):
+        osr = read_os_release()
+        group = Adw.PreferencesGroup(title="System & hardware")
+        rows = [
+            ("System", osr.get("PRETTY_NAME", "Spectre OS"), "computer-symbolic"),
+            ("Kernel", platform.release(), "applications-system-symbolic"),
+            ("Processor", cpu_model(), "computer-symbolic"),
+            ("Graphics", gpu_model(), "video-display-symbolic"),
+            ("Memory", memory_summary(), "media-flash-symbolic"),
+            ("Root storage", root_storage(), "drive-harddisk-symbolic"),
+            ("Firmware mode", firmware_mode(), "computer-symbolic"),
+            ("Battery", battery_summary(), "battery-good-symbolic"),
+        ]
+        for title, value, icon in rows:
+            group.add(Adw.ActionRow(title=title, subtitle=value, icon_name=icon))
+        disks = Adw.ActionRow(title="Disks & storage", subtitle="Inspect partitions, SMART data and mounted drives", icon_name="drive-harddisk-symbolic", activatable=True)
+        disks.connect("activated", lambda *_: spawn("gnome-disks"))
+        group.add(disks)
+        hw = Adw.ActionRow(title="Hardware & Drivers", subtitle="Detailed CPU, GPU, network, USB, audio, storage and firmware report", icon_name="video-display-symbolic", activatable=True)
+        hw.connect("activated", lambda *_: terminal("spectre-hardware; echo; read -rp 'Press Enter to close... '"))
+        group.add(hw)
+        qualify = Adw.ActionRow(title="Hardware Qualification", subtitle="Run Spectre's non-destructive hardware readiness checks", icon_name="emblem-ok-symbolic", activatable=True)
+        qualify.connect("activated", lambda *_: terminal("spectre-hardware-qualification; echo; read -rp 'Press Enter to close... '"))
+        group.add(qualify)
+        return group
+
+    def _power_security_group(self):
+        group = Adw.PreferencesGroup(title="Power & security")
+        profile = output("powerprofilesctl", "get", default="Unavailable") if Path("/usr/bin/powerprofilesctl").exists() else "Unavailable"
+        power = Adw.ActionRow(title="Power profile", subtitle=profile, icon_name="battery-good-symbolic", activatable=True)
+        power.connect("activated", lambda *_: spawn("gnome-control-center", "power"))
+        group.add(power)
+
+        zram = shell("awk 'NR>1 && $1 ~ /^\\/dev\\/zram/{print $1;exit}' /proc/swaps", "Inactive")
+        group.add(Adw.ActionRow(title="Compressed memory", subtitle=zram, icon_name="media-flash-symbolic"))
+
+        fw = Adw.ActionRow(title="Firewall", subtitle=firewall_summary(), icon_name="security-high-symbolic", activatable=True)
+        fw.connect("activated", lambda *_: terminal(f"sudo {admin_command('ufw')} status verbose; echo; read -rp 'Press Enter to close... '"))
+        group.add(fw)
+
+        aa = admin_command("aa-status")
+        apparmor = "Enabled" if shell(f"{aa} --enabled >/dev/null 2>&1 && echo yes || echo no", "no") == "yes" else "Unavailable / disabled"
+        group.add(Adw.ActionRow(title="AppArmor", subtitle=apparmor, icon_name="security-high-symbolic"))
+
+        firmware = Adw.ActionRow(title="Firmware updates", subtitle="Review firmware supported by fwupd", icon_name="software-update-available-symbolic", activatable=True)
+        firmware.connect("activated", lambda *_: terminal("fwupdmgr get-updates --no-pager 2>/dev/null || true; echo; read -rp 'Press Enter to close... '"))
+        group.add(firmware)
+        return group
+
+    def _maintenance_group(self):
+        group = Adw.PreferencesGroup(title="Maintenance & recovery")
+        entries = [
+            ("Full Spectre qualification", "Run the installed OS production acceptance gate", "emblem-ok-symbolic", "spectre-qualification"),
+            ("Spectre Diagnostics", "Inspect graphics, network, storage, audio and failed services", "dialog-information-symbolic", "spectre-diagnostics"),
+            ("Create support report", "Save a sanitized local support report under Documents", "text-x-generic-symbolic", "spectre-support-report"),
+            ("Run maintenance now", "Clean temporary data, bound journals, trim SSDs and clean package cache", "edit-clear-all-symbolic", "sudo spectre-maintenance"),
+            ("Update Manager", "Review security and system updates", "software-update-available-symbolic", "spectre-update-manager"),
+            ("Hardware readiness", "Qualify graphics, drivers, network, audio, USB and firmware", "video-display-symbolic", "spectre-hardware-qualification"),
+            ("Recovery status", "Verify Safe Graphics and diagnostic GRUB entries", "system-reboot-symbolic", "spectre-recovery status"),
+            ("Suspend/resume test", "Prepare a checkpoint for physical-laptop suspend qualification", "weather-clear-night-symbolic", "spectre-suspend-qualification prepare"),
+        ]
+        for title, subtitle, icon, command in entries:
+            row = Adw.ActionRow(title=title, subtitle=subtitle, icon_name=icon, activatable=True)
+            if command == "spectre-update-manager":
+                row.connect("activated", lambda *_: spawn("spectre-update-manager"))
+            else:
+                row.connect("activated", lambda _r, c=command: terminal(f"{c}; echo; read -rp 'Press Enter to close... '"))
+            group.add(row)
+        welcome = Adw.ActionRow(title="Welcome to Spectre", subtitle="Open the first-run experience again", icon_name="help-about-symbolic", activatable=True)
+        welcome.connect("activated", lambda *_: spawn("spectre-welcome"))
+        group.add(welcome)
+        return group
+
+    def _about_group(self):
+        group = Adw.PreferencesGroup(title="About")
+        group.add(Adw.ActionRow(title="CodeDev by Edward", subtitle="Spectre OS creator brand"))
+        group.add(Adw.ActionRow(title="John Edward Q. Dela Cruz", subtitle="Creator of Spectre OS"))
+        site = Adw.ActionRow(title="myportfoliohub.online", subtitle="Portfolio and project hub", icon_name="web-browser-symbolic")
+        link = Gtk.LinkButton.new_with_label(WEBSITE, "Open website")
+        site.add_suffix(link)
+        group.add(site)
+        return group
+
+
+if __name__ == "__main__":
+    raise SystemExit(SpectreCenter().run(sys.argv))

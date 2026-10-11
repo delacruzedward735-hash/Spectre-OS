@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Refresh user-visible desktop metadata without restarting GNOME Shell.
+set -u
+
+mkdir -p "$HOME/.local/share/applications" "$HOME/.cache/spectre" 2>/dev/null || true
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+fi
+
+# Ask GVfs/GIO to re-read the Desktop directory metadata. This is intentionally
+# non-destructive and does not restart Files or GNOME Shell.
+desktop_dir="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+[[ -n "$desktop_dir" ]] || desktop_dir="$HOME/Desktop"
+mkdir -p "$desktop_dir" 2>/dev/null || true
+if command -v gio >/dev/null 2>&1; then
+    gio info "$desktop_dir" >/dev/null 2>&1 || true
+fi
+
+date -Ins > "$HOME/.cache/spectre/desktop-refresh" 2>/dev/null || true
+if command -v notify-send >/dev/null 2>&1; then
+    notify-send -a 'Spectre Desktop' -i view-refresh-symbolic 'Spectre Desktop' 'Desktop metadata refreshed.' >/dev/null 2>&1 || true
+fi
+exit 0

@@ -1,0 +1,15 @@
+[Unit]
+Description=Spectre OS installed-boot provenance recorder
+After=local-fs.target
+ConditionPathExists=/etc/spectre-installation
+ConditionPathExists=!/run/live/medium
+ConditionPathExists=!/lib/live/mount/medium
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/spectre-boot-record
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Spectre ToolHub
+GenericName=Security Tool Store
+Comment=Browse and install Kali security tools inside an isolated toolbox
+Exec=/usr/local/bin/spectre-toolhub gui
+Icon=spectre-toolhub
+Terminal=false
+Categories=System;Security;Development;
+Keywords=Spectre;Kali;Security;Tools;Pentest;Forensics;Network;ToolHub;
+StartupNotify=true
+StartupWMClass=com.spectre.KaliToolHub
+X-GNOME-UsesNotifications=true

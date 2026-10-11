@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Desktop Apps & Icons
+Comment=Pin applications to the desktop or Spectre taskbar
+Exec=/usr/local/bin/spectre-desktop-apps
+Icon=user-desktop-symbolic
+Terminal=false
+Categories=Settings;Utility;
+Keywords=desktop;icons;pin;shortcut;taskbar;
+StartupNotify=true

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Lock the current Spectre session without requiring root privileges.
+set -u
+if command -v loginctl >/dev/null 2>&1 && loginctl lock-session >/dev/null 2>&1; then
+    exit 0
+fi
+if command -v gdbus >/dev/null 2>&1 && \
+   gdbus call --session \
+      --dest org.gnome.ScreenSaver \
+      --object-path /org/gnome/ScreenSaver \
+      --method org.gnome.ScreenSaver.Lock >/dev/null 2>&1; then
+    exit 0
+fi
+printf 'Spectre: unable to lock the current session.\n' >&2
+exit 1

@@ -1,0 +1,298 @@
+/* Spectre Insight 0.9 — desktop cards plus compact panel fallback */
+.spectre-desktop-hud {
+    width: 370px;
+    spacing: 12px;
+}
+
+.spectre-desktop-card {
+    background-color: rgba(2, 9, 21, 0.88);
+    border-color: rgba(48, 160, 242, 0.32);
+    box-shadow: 0 16px 42px rgba(0, 0, 0, 0.34);
+}
+
+.spectre-overview-toggle,
+.spectre-settings-toggle {
+    margin: 4px 3px;
+    padding: 0 8px;
+    border-radius: 11px;
+    color: #5fd0ff;
+    transition-duration: 140ms;
+}
+
+.spectre-settings-toggle {
+    color: #d9e9fb;
+}
+
+.spectre-overview-toggle:hover,
+.spectre-overview-toggle:active,
+.spectre-overview-toggle:checked,
+.spectre-settings-toggle:hover,
+.spectre-settings-toggle:active,
+.spectre-settings-toggle:focus {
+    color: #bfeeff;
+    background-color: rgba(17, 125, 231, 0.20);
+    box-shadow: inset 0 0 0 1px rgba(79, 196, 255, 0.26), 0 0 14px rgba(20, 146, 255, 0.16);
+}
+
+.spectre-overview-menu-item {
+    padding: 0;
+    margin: 0;
+}
+
+.spectre-overview-panel {
+    width: 370px;
+    padding: 10px;
+    spacing: 11px;
+    color: #edf7ff;
+}
+
+.spectre-overview-hero {
+    spacing: 12px;
+    padding: 8px 7px 7px 7px;
+}
+
+.spectre-overview-hero-icon {
+    color: #39bdff;
+    padding: 9px;
+    border-radius: 999px;
+    background-color: rgba(13, 71, 119, 0.36);
+    border: 1px solid rgba(52, 182, 255, 0.25);
+}
+
+.spectre-overview-title {
+    color: #f5f9ff;
+    font-size: 13pt;
+    font-weight: 850;
+}
+
+.spectre-overview-subtitle {
+    color: #829fbe;
+    font-size: 9pt;
+}
+
+.spectre-overview-card {
+    padding: 14px 15px;
+    spacing: 10px;
+    border-radius: 18px;
+    color: #eaf4ff;
+    background-color: rgba(2, 10, 24, 0.94);
+    border: 1px solid rgba(48, 160, 242, 0.25);
+    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.30);
+}
+
+.spectre-overview-card.compact {
+    padding: 11px 12px;
+    spacing: 7px;
+}
+
+.spectre-overview-section-header {
+    spacing: 10px;
+}
+
+.spectre-overview-section-icon {
+    color: #39bdff;
+    padding: 7px;
+    border-radius: 999px;
+    background-color: rgba(15, 57, 96, 0.56);
+    border: 1px solid rgba(62, 181, 255, 0.18);
+}
+
+.spectre-overview-section-title {
+    color: #f5f9ff;
+    font-size: 10.5pt;
+    font-weight: 820;
+}
+
+.spectre-overview-online {
+    color: #4de29b;
+    font-size: 8.8pt;
+    font-weight: 820;
+}
+
+.spectre-overview-offline {
+    color: #ff7189;
+    font-size: 8.8pt;
+    font-weight: 820;
+}
+
+.spectre-overview-detail {
+    color: #a4bad2;
+    font-size: 8.8pt;
+}
+
+.spectre-overview-separator {
+    height: 1px;
+    background-color: rgba(75, 157, 226, 0.15);
+}
+
+.spectre-overview-rate {
+    font-size: 10pt;
+    font-weight: 780;
+}
+
+.spectre-overview-down { color: #48bdff; }
+.spectre-overview-up { color: #4fe0a2; }
+
+.spectre-overview-metric-row {
+    spacing: 9px;
+}
+
+.spectre-overview-metric {
+    min-width: 89px;
+    padding: 10px 10px;
+    spacing: 3px;
+    border-radius: 14px;
+    background-color: rgba(12, 28, 49, 0.88);
+    border: 1px solid rgba(79, 168, 245, 0.14);
+}
+
+.spectre-overview-metric-name {
+    color: #8da9c7;
+    font-size: 8.4pt;
+    font-weight: 700;
+}
+
+.spectre-overview-metric-value {
+    color: #f4f9ff;
+    font-size: 14pt;
+    font-weight: 850;
+}
+
+.spectre-overview-bar-track {
+    height: 4px;
+    min-height: 4px;
+    border-radius: 999px;
+    background-color: rgba(83, 112, 145, 0.25);
+}
+
+.spectre-overview-bar-fill {
+    height: 4px;
+    min-height: 4px;
+    border-radius: 999px;
+    background-color: #2caeff;
+    box-shadow: 0 0 8px rgba(44, 174, 255, 0.32);
+}
+
+.spectre-overview-bar-fill.ram {
+    background-color: #9c66ff;
+    box-shadow: 0 0 8px rgba(156, 102, 255, 0.28);
+}
+
+.spectre-overview-bar-fill.disk {
+    background-color: #3ed99b;
+    box-shadow: 0 0 8px rgba(62, 217, 155, 0.28);
+}
+
+.spectre-overview-identity-line {
+    color: #8fb2d3;
+    font-size: 9pt;
+}
+
+.spectre-overview-actions {
+    spacing: 8px;
+}
+
+.spectre-overview-action {
+    padding: 9px 10px;
+    border-radius: 12px;
+    color: #dff4ff;
+    background-color: rgba(13, 33, 57, 0.90);
+    border: 1px solid rgba(69, 174, 248, 0.16);
+    transition-duration: 140ms;
+}
+
+.spectre-overview-action StBoxLayout {
+    spacing: 6px;
+}
+
+.spectre-overview-action:hover,
+.spectre-overview-action:focus {
+    color: white;
+    background-color: rgba(17, 119, 220, 0.26);
+    border-color: rgba(83, 196, 255, 0.34);
+}
+
+/* RC5.1 light appearance: Insight follows GNOME Dark Style instead of
+ * remaining permanently navy. */
+.spectre-overview-panel.spectre-light,
+.spectre-desktop-hud.spectre-light {
+    color: #172235;
+}
+.spectre-overview-card.spectre-light,
+.spectre-desktop-card.spectre-light {
+    color: #172235;
+    background-color: rgba(250, 252, 255, 0.96);
+    border-color: rgba(43, 102, 169, 0.16);
+    box-shadow: 0 12px 34px rgba(38, 62, 94, 0.17);
+}
+.spectre-light .spectre-overview-title,
+.spectre-light .spectre-overview-section-title,
+.spectre-light .spectre-overview-metric-value { color: #172235; }
+.spectre-light .spectre-overview-subtitle,
+.spectre-light .spectre-overview-detail,
+.spectre-light .spectre-overview-metric-name,
+.spectre-light .spectre-overview-identity-line { color: #647a95; }
+.spectre-light .spectre-overview-metric {
+    background-color: rgba(232, 239, 248, 0.92);
+    border-color: rgba(50, 112, 178, 0.13);
+}
+.spectre-light .spectre-overview-action {
+    color: #23405f;
+    background-color: rgba(235, 242, 250, 0.96);
+    border-color: rgba(43, 111, 182, 0.14);
+}
+.spectre-light .spectre-overview-action:hover,
+.spectre-light .spectre-overview-action:focus {
+    color: #0f4f93;
+    background-color: rgba(28, 123, 226, 0.11);
+}
+.spectre-light .spectre-overview-separator { background-color: rgba(70, 105, 145, 0.14); }
+.spectre-light .spectre-overview-bar-track { background-color: rgba(93, 116, 143, 0.19); }
+
+/* RC5.6.1 — style the Insight popup shell itself, not only the inner cards.
+ * This keeps its outer surface consistent with the fixed Power popup in both
+ * Spectre Night and Spectre Day. */
+.spectre-insight-popup .popup-menu-content {
+    background-color: rgba(2, 9, 21, 0.97);
+    color: #edf7ff;
+    border-color: rgba(48, 160, 242, 0.22);
+    box-shadow: 0 16px 44px rgba(0, 0, 0, 0.32);
+}
+
+.spectre-insight-popup.spectre-light .popup-menu-content {
+    background-color: rgba(248, 251, 255, 0.995);
+    color: #172235;
+    border-color: rgba(43, 102, 169, 0.16);
+    box-shadow: 0 16px 44px rgba(38, 62, 94, 0.18);
+}
+
+.spectre-insight-popup.spectre-light .popup-menu-item,
+.spectre-insight-popup.spectre-light .popup-menu-item StLabel {
+    color: #24364f;
+}
+
+
+/* UI audit: theme-aware top-right Insight and Settings glyph contrast. */
+.spectre-overview-toggle.spectre-light,
+.spectre-settings-toggle.spectre-light {
+    color: #244563;
+}
+.spectre-overview-toggle.spectre-light:hover,
+.spectre-overview-toggle.spectre-light:focus,
+.spectre-settings-toggle.spectre-light:hover,
+.spectre-settings-toggle.spectre-light:focus {
+    color: #0c5595;
+    background-color: rgba(23, 111, 192, 0.12);
+    box-shadow: inset 0 0 0 1px rgba(31, 112, 184, 0.20);
+}
+
+/* SPECTRE_HUD_LIGHT_ICONS_QA_V1 */
+#panel.spectre-light-mode .spectre-overview-toggle,
+#panel.spectre-light-mode .spectre-overview-toggle StIcon {
+    color: #075985;
+}
+
+#panel.spectre-light-mode .spectre-settings-toggle,
+#panel.spectre-light-mode .spectre-settings-toggle StIcon {
+    color: #203d5b;
+}

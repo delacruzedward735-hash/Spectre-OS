@@ -13,3 +13,7 @@ As of 2026-10-11, this repository is being prepared for source publication. The 
 - Clean install and regression test from the published build process.
 
 **Do not treat the ISO checksum alone as proof of source reproducibility or rights clearance.**
+
+## Source review branch
+
+The `source/gnome-toolhub-review` branch adds a hash-verified GNOME/ToolHub source subset for manual ownership, licensing and security review. It is not a reproducible complete Linux Spectre distribution. See [partial source limitations](PARTIAL_SOURCE_STATUS.md).

@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+# Spectre Appearance Sync — RC5.1
+#
+# GNOME's color-scheme remains authoritative. Spectre follows it for GTK,
+# Shell surfaces and the paired stock wallpaper. If the user chooses any other
+# wallpaper, Spectre stops automatic wallpaper switching and leaves that image
+# unchanged across light/dark transitions. Selecting Spectre Default restores
+# the paired behavior.
+set -u
+
+DEFAULT_LIGHT='file:///usr/share/backgrounds/spectre/collection/spectre-default-light.png'
+DEFAULT_DARK='file:///usr/share/backgrounds/spectre/collection/spectre-default-dark.png'
+SCHEMA='org.spectre.desktop'
+USER_THEME_UUID='user-theme@gnome-shell-extensions.gcampax.github.com'
+GTK3_SETTINGS="${XDG_CONFIG_HOME:-$HOME/.config}/gtk-3.0/settings.ini"
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/spectre-appearance-${UID}"
+STATE_FILE="$STATE_DIR/last-scheme"
+# SPECTRE_THEME_SYNC_V2
+
+get_value() {
+  gsettings get "$1" "$2" 2>/dev/null | sed "s/^'//;s/'$//" || true
+}
+set_string() {
+  local schema="$1" key="$2" value="$3" current
+  current="$(get_value "$schema" "$key")"
+  [[ "$current" == "$value" ]] || gsettings set "$schema" "$key" "$value" >/dev/null 2>&1 || true
+}
+has_spectre_schema() {
+  gsettings list-schemas 2>/dev/null | grep -Fxq "$SCHEMA"
+}
+scheme() {
+  local value
+  value="$(get_value org.gnome.desktop.interface color-scheme)"
+  [[ -n "$value" ]] && printf '%s\n' "$value" || printf 'default\n'
+}
+wallpaper_mode() {
+  if has_spectre_schema; then
+    local value
+    value="$(get_value "$SCHEMA" wallpaper-mode)"
+    [[ -n "$value" ]] && printf '%s\n' "$value" || printf 'spectre-auto\n'
+  else
+    printf 'spectre-auto\n'
+  fi
+}
+set_wallpaper_mode() {
+  has_spectre_schema || return 0
+  set_string "$SCHEMA" wallpaper-mode "$1"
+}
+set_profile() {
+  has_spectre_schema || return 0
+  set_string "$SCHEMA" appearance-profile "$1"
+}
+
+write_gtk3_runtime_settings() {
+  local theme="$1" icons="$2" prefer_dark="$3"
+
+  mkdir -p "$(dirname "$GTK3_SETTINGS")" "$STATE_DIR" \
+    2>/dev/null || true
+
+  python3 - "$GTK3_SETTINGS" "$theme" "$icons" "$prefer_dark" <<'PYSET' \
+    >/dev/null 2>&1 || true
+from configparser import ConfigParser
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+theme = sys.argv[2]
+icons = sys.argv[3]
+prefer = sys.argv[4]
+
+cfg = ConfigParser(interpolation=None)
+
+if path.exists():
+    try:
+        cfg.read(path)
+    except Exception:
+        cfg = ConfigParser(interpolation=None)
+
+if not cfg.has_section("Settings"):
+    cfg.add_section("Settings")
+
+cfg.set("Settings", "gtk-theme-name", theme)
+cfg.set("Settings", "gtk-icon-theme-name", icons)
+cfg.set("Settings", "gtk-application-prefer-dark-theme", prefer)
+cfg.set("Settings", "gtk-font-name", "Cantarell 11")
+
+with path.open("w") as f:
+    cfg.write(f, space_around_delimiters=False)
+PYSET
+}
+
+refresh_shell_theme() {
+  command -v gnome-extensions >/dev/null 2>&1 || return 0
+  gnome-extensions info "$USER_THEME_UUID" >/dev/null 2>&1 || return 0
+
+  # GNOME 48 can occasionally retain the previous user-theme stylesheet.
+  # Refresh only the User Themes extension on a real appearance transition.
+  gnome-extensions disable "$USER_THEME_UUID" >/dev/null 2>&1 || true
+  gnome-extensions enable "$USER_THEME_UUID" >/dev/null 2>&1 || true
+}
+
+is_default_uri() {
+  [[ "$1" == "$DEFAULT_LIGHT" || "$1" == "$DEFAULT_DARK" || "$1" == 'file:///usr/share/backgrounds/spectre/spectre-gnome.png' ]]
+}
+
+apply_stock_pair() {
+  set_string org.gnome.desktop.background picture-uri "$DEFAULT_LIGHT"
+  set_string org.gnome.desktop.background picture-uri-dark "$DEFAULT_DARK"
+  gsettings set org.gnome.desktop.background picture-options 'zoom' >/dev/null 2>&1 || true
+  set_wallpaper_mode 'spectre-auto'
+}
+
+reconcile_wallpaper_choice() {
+  local light dark mode chosen
+  light="$(get_value org.gnome.desktop.background picture-uri)"
+  dark="$(get_value org.gnome.desktop.background picture-uri-dark)"
+  mode="$(wallpaper_mode)"
+
+  # Selecting the paired Spectre Default entry in GNOME Appearance restores
+  # auto mode. The compatibility spectre-gnome path also counts as default.
+  if is_default_uri "$light" && is_default_uri "$dark"; then
+    apply_stock_pair
+    return 0
+  fi
+
+  # A non-default image is a deliberate user wallpaper choice. Never replace
+  # it merely because Dark Style changes. If GNOME only changed one side of
+  # the pair, mirror the currently visible side once so both modes preserve it.
+  if [[ -n "$light" || -n "$dark" ]]; then
+    set_wallpaper_mode 'custom'
+    if [[ "$(scheme)" == 'prefer-dark' ]]; then
+      chosen="${dark:-$light}"
+    else
+      chosen="${light:-$dark}"
+    fi
+    if [[ -n "$chosen" ]]; then
+      set_string org.gnome.desktop.background picture-uri "$chosen"
+      set_string org.gnome.desktop.background picture-uri-dark "$chosen"
+    fi
+  elif [[ "$mode" == 'spectre-auto' ]]; then
+    apply_stock_pair
+  fi
+}
+
+apply_scheme() {
+  local current desired_gtk desired_icons desired_shell prefer_dark
+  local previous='' transition=0
+
+  current="$(scheme)"
+
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+  if [[ -r "$STATE_FILE" ]]; then
+    previous="$(cat "$STATE_FILE" 2>/dev/null || true)"
+  fi
+
+  [[ "$previous" != "$current" ]] && transition=1
+
+  case "$current" in
+    prefer-dark)
+      desired_gtk='Adwaita-dark'
+      desired_icons='Papirus-Dark'
+      desired_shell='Spectre-Night'
+      prefer_dark='1'
+
+      gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark' \
+        >/dev/null 2>&1 || true
+
+      gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark' \
+        >/dev/null 2>&1 || true
+
+      gsettings set org.gnome.shell.extensions.user-theme name 'Spectre-Night' \
+        >/dev/null 2>&1 || true
+
+      gsettings set org.gnome.shell.extensions.dash-to-dock \
+        background-color '#020b18' >/dev/null 2>&1 || true
+
+      gsettings set org.gnome.shell.extensions.dash-to-dock \
+        background-opacity 0.36 >/dev/null 2>&1 || true
+
+      set_profile 'dark'
+      ;;
+
+    *)
+      desired_gtk='Adwaita'
+      desired_icons='Papirus'
+      desired_shell='Spectre-Day'
+      prefer_dark='0'
+
+      gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita' \
+        >/dev/null 2>&1 || true
+
+      gsettings set org.gnome.desktop.interface icon-theme 'Papirus' \
+        >/dev/null 2>&1 || true
+
+      gsettings set org.gnome.shell.extensions.user-theme name 'Spectre-Day' \
+        >/dev/null 2>&1 || true
+
+      gsettings set org.gnome.shell.extensions.dash-to-dock \
+        background-color '#f4f8fd' >/dev/null 2>&1 || true
+
+      gsettings set org.gnome.shell.extensions.dash-to-dock \
+        background-opacity 0.56 >/dev/null 2>&1 || true
+
+      set_profile 'light'
+      ;;
+  esac
+
+  # Do not depend solely on asynchronous XSettings propagation.
+  # DING reads this explicit GTK3 startup configuration when restarted.
+  write_gtk3_runtime_settings \
+    "$desired_gtk" \
+    "$desired_icons" \
+    "$prefer_dark"
+
+  if [[ "$(wallpaper_mode)" == 'spectre-auto' ]]; then
+    apply_stock_pair
+  fi
+
+  printf '%s\n' "$current" >"$STATE_FILE" 2>/dev/null || true
+
+  if (( transition )); then
+    # Give dconf/XSettings a moment to settle before DING is relaunched.
+    sleep 0.15
+
+    /usr/local/bin/spectre-ding-reload \
+      --reason theme-change >/dev/null 2>&1 || true
+
+    refresh_shell_theme
+  fi
+}
+
+watch_all() {
+  apply_scheme
+  reconcile_wallpaper_choice
+  # Run the three monitors concurrently and serialize reconciliation through a
+  # tiny event loop. They are read-only subprocesses; all writes happen here.
+  local fifo dir
+  dir="$(mktemp -d -t spectre-appearance.XXXXXX)" || exit 1
+  fifo="$dir/events"
+  mkfifo "$fifo"
+  trap 'jobs -pr | xargs -r kill 2>/dev/null || true; rm -rf "$dir"' EXIT INT TERM HUP
+  (gsettings monitor org.gnome.desktop.interface color-scheme 2>/dev/null; echo '__monitor_end__') >"$fifo" &
+  (gsettings monitor org.gnome.desktop.background picture-uri 2>/dev/null; echo '__monitor_end__') >"$fifo" &
+  (gsettings monitor org.gnome.desktop.background picture-uri-dark 2>/dev/null; echo '__monitor_end__') >"$fifo" &
+  while IFS= read -r line; do
+    [[ "$line" == '__monitor_end__' ]] && continue
+    apply_scheme
+    reconcile_wallpaper_choice
+  done <"$fifo"
+}
+
+case "${1:---once}" in
+  --once)
+    reconcile_wallpaper_choice
+    apply_scheme
+    ;;
+  --toggle)
+    if [[ "$(scheme)" == 'prefer-dark' ]]; then
+      gsettings set org.gnome.desktop.interface color-scheme 'default'
+    else
+      gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'
+    fi
+    apply_scheme
+    ;;
+  --reset-wallpaper)
+    apply_stock_pair
+    apply_scheme
+    ;;
+  --watch)
+    watch_all
+    ;;
+  *)
+    echo 'usage: spectre-appearance-sync [--once|--toggle|--reset-wallpaper|--watch]' >&2
+    exit 2
+    ;;
+esac

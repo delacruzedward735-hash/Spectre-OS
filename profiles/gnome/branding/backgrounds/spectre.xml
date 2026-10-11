@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE wallpapers SYSTEM "gnome-wp-list.dtd">
+<wallpapers>
+  <wallpaper deleted="false">
+    <name>Spectre Default</name>
+    <filename>/usr/share/backgrounds/spectre/collection/spectre-default-light.png</filename>
+    <filename-dark>/usr/share/backgrounds/spectre/collection/spectre-default-dark.png</filename-dark>
+    <options>zoom</options><pcolor>#020712</pcolor><scolor>#071b35</scolor><shade_type>solid</shade_type>
+  </wallpaper>
+  <wallpaper deleted="false"><name>Spectre Classic</name><filename>/usr/share/backgrounds/spectre/collection/spectre-classic.png</filename><filename-dark>/usr/share/backgrounds/spectre/collection/spectre-classic.png</filename-dark><options>zoom</options></wallpaper>
+  <wallpaper deleted="false"><name>Spectre Orbit</name><filename>/usr/share/backgrounds/spectre/collection/spectre-orbit.png</filename><filename-dark>/usr/share/backgrounds/spectre/collection/spectre-orbit.png</filename-dark><options>zoom</options></wallpaper>
+  <wallpaper deleted="false"><name>Spectre Circuit</name><filename>/usr/share/backgrounds/spectre/collection/spectre-circuit.png</filename><filename-dark>/usr/share/backgrounds/spectre/collection/spectre-circuit.png</filename-dark><options>zoom</options></wallpaper>
+  <wallpaper deleted="false"><name>Spectre Flow</name><filename>/usr/share/backgrounds/spectre/collection/spectre-flow.png</filename><filename-dark>/usr/share/backgrounds/spectre/collection/spectre-flow.png</filename-dark><options>zoom</options></wallpaper>
+  <wallpaper deleted="false"><name>Spectre Neon</name><filename>/usr/share/backgrounds/spectre/collection/spectre-neon.png</filename><filename-dark>/usr/share/backgrounds/spectre/collection/spectre-neon.png</filename-dark><options>zoom</options></wallpaper>
+  <wallpaper deleted="false"><name>Spectre Aurora</name><filename>/usr/share/backgrounds/spectre/collection/spectre-aurora.png</filename><filename-dark>/usr/share/backgrounds/spectre/collection/spectre-aurora.png</filename-dark><options>zoom</options></wallpaper>
+  <wallpaper deleted="false"><name>Spectre Ember</name><filename>/usr/share/backgrounds/spectre/collection/spectre-ember.png</filename><filename-dark>/usr/share/backgrounds/spectre/collection/spectre-ember.png</filename-dark><options>zoom</options></wallpaper>
+  <wallpaper deleted="false"><name>Spectre Gold</name><filename>/usr/share/backgrounds/spectre/collection/spectre-gold.png</filename><filename-dark>/usr/share/backgrounds/spectre/collection/spectre-gold.png</filename-dark><options>zoom</options></wallpaper>
+  <wallpaper deleted="false"><name>Spectre Crimson</name><filename>/usr/share/backgrounds/spectre/collection/spectre-crimson.png</filename><filename-dark>/usr/share/backgrounds/spectre/collection/spectre-crimson.png</filename-dark><options>zoom</options></wallpaper>
+  <wallpaper deleted="false"><name>Spectre Horizon</name><filename>/usr/share/backgrounds/spectre/collection/spectre-horizon.png</filename><filename-dark>/usr/share/backgrounds/spectre/collection/spectre-horizon.png</filename-dark><options>zoom</options></wallpaper>
+  <wallpaper deleted="false"><name>Spectre Emerald</name><filename>/usr/share/backgrounds/spectre/collection/spectre-emerald.png</filename><filename-dark>/usr/share/backgrounds/spectre/collection/spectre-emerald.png</filename-dark><options>zoom</options></wallpaper>
+  <wallpaper deleted="false"><name>Spectre Deep Space</name><filename>/usr/share/backgrounds/spectre/collection/spectre-deep-space.png</filename><filename-dark>/usr/share/backgrounds/spectre/collection/spectre-deep-space.png</filename-dark><options>zoom</options></wallpaper>
+  <wallpaper deleted="false"><name>Spectre Violet</name><filename>/usr/share/backgrounds/spectre/collection/spectre-violet.png</filename><filename-dark>/usr/share/backgrounds/spectre/collection/spectre-violet.png</filename-dark><options>zoom</options></wallpaper>
+  <wallpaper deleted="false"><name>Spectre Sunset</name><filename>/usr/share/backgrounds/spectre/collection/spectre-sunset.png</filename><filename-dark>/usr/share/backgrounds/spectre/collection/spectre-sunset.png</filename-dark><options>zoom</options></wallpaper>
+  <wallpaper deleted="false"><name>Spectre Dimension</name><filename>/usr/share/backgrounds/spectre/collection/spectre-dimension.png</filename><filename-dark>/usr/share/backgrounds/spectre/collection/spectre-dimension.png</filename-dark><options>zoom</options></wallpaper>
+</wallpapers>

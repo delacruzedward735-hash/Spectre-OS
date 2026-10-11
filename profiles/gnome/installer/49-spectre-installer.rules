@@ -1,0 +1,10 @@
+// Spectre live-session-only authorization.
+// The GTK wizard remains unprivileged; only the validated disk-install backend
+// may elevate, and this rule is removed from the installed system.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.policykit.exec" &&
+        action.lookup("program") == "/usr/local/sbin/spectre-installer-backend" &&
+        subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});

@@ -1,0 +1,88 @@
+/* Spectre adaptive GTK3 compatibility layer — RC4.2.
+ * Do not force dark window backgrounds here. GNOME's native Dark Style switch
+ * owns the application color scheme; Spectre only adds restrained shape/glass
+ * polish using the active GTK theme's own colors. */
+button,
+entry,
+searchentry,
+combobox button {
+    border-radius: 11px;
+}
+
+/* SPECTRE_MENU_BORDER_FIX_V1
+ * Do not add an extra Spectre border around GTK3 menus/popovers.
+ *
+ * The old @borders stroke becomes clearly visible as:
+ *   - a gray rectangle in Light Style
+ *   - a bright/white rectangle in Dark Style
+ *
+ * Adwaita already provides visual separation, so Spectre uses a
+ * restrained shadow instead of a second outline.
+ */
+menu,
+.menu,
+popover.background,
+popover.background > contents {
+    background-color: alpha(@theme_bg_color, 0.98);
+    color: @theme_fg_color;
+    border: none;
+    border-radius: 14px;
+    box-shadow: 0 10px 28px alpha(black, 0.18);
+}
+
+/* GTK3 popup windows can receive a decoration stroke independently
+ * of the menu itself. Remove that extra frame.
+ */
+window.popup decoration,
+window.csd.popup decoration {
+    border: none;
+    box-shadow: none;
+}
+
+/* RC5.6 desktop context menu stabilization.
+ * DING gets this class from spectre-patch-ding. Keep its surface opaque so
+ * wallpaper art cannot bleed through, remove the visible outline and row
+ * borders, and use whitespace rather than separator strokes between groups.
+ * The selector is deliberately scoped so normal GTK application menus keep
+ * their native theme treatment. */
+.spectre-desktop-menu {
+    background-color: @theme_bg_color;
+    color: @theme_fg_color;
+    border: none;
+    border-radius: 14px;
+    box-shadow: 0 12px 30px alpha(black, 0.20);
+    padding: 5px 0;
+}
+
+.spectre-desktop-menu menuitem {
+    border: none;
+    border-width: 0;
+    box-shadow: none;
+    margin: 0;
+    padding: 5px 14px;
+}
+
+.spectre-desktop-menu menuitem:hover,
+.spectre-desktop-menu menuitem:focus {
+    border: none;
+    box-shadow: none;
+}
+
+.spectre-desktop-menu separator,
+.spectre-desktop-menu .separator,
+.spectre-desktop-menu menuitem.separator {
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    min-height: 5px;
+    margin: 0;
+    padding: 0;
+}
+
+menuitem:hover,
+menuitem:focus,
+popover modelbutton:hover,
+popover modelbutton:focus {
+    background-color: alpha(@theme_selected_bg_color, 0.24);
+    border-radius: 9px;
+}

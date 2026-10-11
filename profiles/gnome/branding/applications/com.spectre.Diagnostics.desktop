@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Spectre Diagnostics
+Comment=Inspect graphics, network, storage and service health
+Exec=gnome-terminal -- bash -lc "spectre-diagnostics; echo; read -rp 'Press Enter to close... '"
+Icon=org.gnome.SystemMonitor
+Terminal=false
+Categories=System;Utility;
+Keywords=Spectre;Diagnostics;Hardware;Network;

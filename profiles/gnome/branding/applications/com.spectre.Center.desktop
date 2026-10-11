@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Spectre Center
+Comment=System overview, tools and maintenance for Spectre OS
+Exec=spectre-center
+Icon=spectre-logo
+Terminal=false
+Categories=Settings;System;
+Keywords=Spectre;Settings;System;Update;Diagnostics;
+StartupNotify=true

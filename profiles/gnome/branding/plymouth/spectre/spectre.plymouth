@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Spectre
+Description=Spectre OS smooth boot identity
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/spectre
+ScriptFile=/usr/share/plymouth/themes/spectre/spectre.script

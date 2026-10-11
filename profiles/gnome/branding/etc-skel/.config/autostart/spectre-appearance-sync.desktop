@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Spectre Appearance Sync
+Comment=Keep GTK applications synchronized with GNOME Dark Style
+Exec=/usr/local/bin/spectre-appearance-sync --watch
+OnlyShowIn=GNOME;
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=2

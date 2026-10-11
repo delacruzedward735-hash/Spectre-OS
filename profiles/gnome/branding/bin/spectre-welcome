@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""Spectre Welcome — first-run setup for installed Spectre OS."""
+import os
+import platform
+import subprocess
+import sys
+from pathlib import Path
+
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+
+APP_ID = "com.spectre.Welcome"
+MARKER = Path.home() / ".config" / "spectre" / "welcome-complete"
+INSTALLED_MARKER = Path("/etc/spectre-installation")
+WEBSITE = "https://myportfoliohub.online"
+
+if "--autostart" in sys.argv:
+    if MARKER.exists() or not INSTALLED_MARKER.exists():
+        raise SystemExit(0)
+
+
+def spawn(*argv):
+    try:
+        subprocess.Popen(argv, start_new_session=True)
+    except OSError as exc:
+        print(f"Unable to launch {argv[0]}: {exc}", file=sys.stderr)
+
+
+def text_cmd(*argv, default="Unavailable"):
+    try:
+        return subprocess.check_output(argv, text=True, stderr=subprocess.DEVNULL).strip() or default
+    except Exception:
+        return default
+
+
+def memory_total():
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                kib = int(line.split()[1])
+                return f"{kib / 1024 / 1024:.1f} GiB"
+    except Exception:
+        pass
+    return "Unavailable"
+
+
+class Welcome(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        self.interface = Gio.Settings.new("org.gnome.desktop.interface")
+        self.pages = []
+        self.index = 0
+
+    def do_activate(self):
+        if self.props.active_window:
+            self.props.active_window.present()
+            return
+
+        Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.DEFAULT)
+        self._css()
+        self.win = Adw.ApplicationWindow(application=self)
+        self.win.set_title("Welcome to Spectre OS")
+        self.win.set_default_size(980, 700)
+        self.win.set_size_request(760, 560)
+
+        toolbar = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.set_title_widget(Adw.WindowTitle(title="Welcome to Spectre OS", subtitle="First-run setup"))
+        toolbar.add_top_bar(header)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.stack = Gtk.Stack()
+        self.stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
+        self.stack.set_transition_duration(260)
+        self.stack.set_vexpand(True)
+
+        for name, page in [
+            ("welcome", self._page_welcome()),
+            ("appearance", self._page_appearance()),
+            ("system", self._page_system()),
+            ("creator", self._page_creator()),
+        ]:
+            self.pages.append(name)
+            self.stack.add_named(page, name)
+
+        outer.append(self.stack)
+        outer.append(self._footer())
+        toolbar.set_content(outer)
+        self.win.set_content(toolbar)
+        self.win.connect("close-request", self._close_request)
+        self._show_page(0)
+        self.win.present()
+
+    def _clamp_page(self, child):
+        clamp = Adw.Clamp(maximum_size=900, tightening_threshold=720)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        box.set_margin_top(28)
+        box.set_margin_bottom(24)
+        box.set_margin_start(28)
+        box.set_margin_end(28)
+        box.append(child)
+        clamp.set_child(box)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_child(clamp)
+        return scroll
+
+    def _hero(self, title, subtitle, icon=True):
+        hero = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        hero.add_css_class("welcome-hero")
+        if icon:
+            logo = Gtk.Image.new_from_file("/usr/share/pixmaps/spectre-logo.png")
+            logo.set_pixel_size(96)
+            logo.set_halign(Gtk.Align.CENTER)
+            hero.append(logo)
+        t = Gtk.Label(label=title)
+        t.add_css_class("welcome-title")
+        t.set_wrap(True)
+        t.set_justify(Gtk.Justification.CENTER)
+        hero.append(t)
+        s = Gtk.Label(label=subtitle)
+        s.add_css_class("welcome-subtitle")
+        s.set_wrap(True)
+        s.set_justify(Gtk.Justification.CENTER)
+        hero.append(s)
+        return hero
+
+    def _page_welcome(self):
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        body.append(self._hero(
+            "WELCOME TO SPECTRE",
+            "Your installed Spectre system is ready. This short setup helps you choose the experience you want before daily use.",
+        ))
+        group = Adw.PreferencesGroup(title="Built for daily use")
+        for title, subtitle, icon in [
+            ("Spectre desktop", "GNOME + Wayland with the Spectre Panel, Insight HUD and taskbar experience", "user-desktop-symbolic"),
+            ("Recovery-minded", "Normal boot stays clean while diagnostics and recovery paths remain available", "system-reboot-symbolic"),
+            ("Privacy-conscious", "No telemetry is configured by Spectre; support reports are created locally for you to review", "security-high-symbolic"),
+        ]:
+            group.add(Adw.ActionRow(title=title, subtitle=subtitle, icon_name=icon))
+        body.append(group)
+        return self._clamp_page(body)
+
+    def _page_appearance(self):
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        body.append(self._hero("MAKE SPECTRE YOURS", "Choose your starting appearance. You can change these options any time in Spectre Center.", icon=False))
+        group = Adw.PreferencesGroup(title="Appearance &amp; desktop")
+        dark = Adw.SwitchRow(title="Dark Style", subtitle="Use GNOME's native dark application preference", icon_name="weather-clear-night-symbolic")
+        dark.set_active(self.interface.get_string("color-scheme") == "prefer-dark")
+        dark.connect("notify::active", self._dark_changed)
+        group.add(dark)
+
+        taskbar = Adw.ActionRow(title="Taskbar behavior", subtitle="Smart hide, position, icon size, motion and opacity", icon_name="view-grid-symbolic", activatable=True)
+        taskbar.connect("activated", lambda *_: spawn("spectre-taskbar-settings"))
+        group.add(taskbar)
+        desktop = Adw.ActionRow(title="Desktop apps &amp; icons", subtitle="Optionally place trusted application launchers on your desktop", icon_name="user-desktop-symbolic", activatable=True)
+        desktop.connect("activated", lambda *_: spawn("spectre-desktop-apps"))
+        group.add(desktop)
+        wallpaper = Adw.ActionRow(title="Wallpaper &amp; display", subtitle="Open GNOME appearance settings", icon_name="preferences-desktop-wallpaper-symbolic", activatable=True)
+        wallpaper.connect("activated", lambda *_: spawn("gnome-control-center", "appearance"))
+        group.add(wallpaper)
+        body.append(group)
+        return self._clamp_page(body)
+
+    def _page_system(self):
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        body.append(self._hero("SYSTEM READY", "Review the machine and open the tools you will use to keep Spectre healthy.", icon=False))
+        info = Adw.PreferencesGroup(title="This computer")
+        firmware = "UEFI" if Path("/sys/firmware/efi").exists() else "Legacy BIOS"
+        for title, value, icon in [
+            ("Kernel", platform.release(), "applications-system-symbolic"),
+            ("Processor", text_cmd("bash", "-lc", "lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -1"), "computer-symbolic"),
+            ("Memory", memory_total(), "media-flash-symbolic"),
+            ("Firmware", firmware, "computer-symbolic"),
+        ]:
+            info.add(Adw.ActionRow(title=title, subtitle=value, icon_name=icon))
+        body.append(info)
+
+        tools = Adw.PreferencesGroup(title="Keep Spectre healthy")
+        actions = [
+            ("Spectre Center", "System, power, security, desktop and maintenance controls", "preferences-system-symbolic", lambda *_: spawn("spectre-center")),
+            ("Run system status", "Quick PASS/WARN/FAIL health summary", "emblem-ok-symbolic", lambda *_: spawn("gnome-terminal", "--", "bash", "-lc", "spectre-status; echo; read -rp 'Press Enter to close... '")),
+            ("Check for updates", "Refresh package metadata and review available updates", "software-update-available-symbolic", lambda *_: spawn("gnome-terminal", "--", "bash", "-lc", "spectre-update --check; echo; read -rp 'Press Enter to close... '")),
+            ("Power settings", "Battery, suspend, display blanking and power mode", "battery-good-symbolic", lambda *_: spawn("gnome-control-center", "power")),
+        ]
+        for title, subtitle, icon, callback in actions:
+            row = Adw.ActionRow(title=title, subtitle=subtitle, icon_name=icon, activatable=True)
+            row.connect("activated", callback)
+            tools.add(row)
+        body.append(tools)
+        return self._clamp_page(body)
+
+    def _page_creator(self):
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        body.append(self._hero("YOU'RE READY", "Spectre is configured for its first installed session. Welcome to the project.", icon=True))
+        group = Adw.PreferencesGroup(title="About Spectre")
+        group.add(Adw.ActionRow(title="CodeDev by Edward", subtitle="Creator brand"))
+        group.add(Adw.ActionRow(title="John Edward Q. Dela Cruz", subtitle="Creator of Spectre OS"))
+        website_row = Adw.ActionRow(title="myportfoliohub.online", subtitle="Official creator portfolio and project hub", icon_name="web-browser-symbolic")
+        link = Gtk.LinkButton.new_with_label(WEBSITE, "Visit website")
+        link.set_valign(Gtk.Align.CENTER)
+        website_row.add_suffix(link)
+        group.add(website_row)
+        body.append(group)
+        privacy = Adw.PreferencesGroup(title="Before you start")
+        privacy.add(Adw.ActionRow(
+            title="Support reports stay local",
+            subtitle="Spectre can create a sanitized diagnostic report in Documents. Review it yourself before sharing.",
+            icon_name="dialog-information-symbolic",
+        ))
+        body.append(privacy)
+        return self._clamp_page(body)
+
+    def _footer(self):
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        bar.add_css_class("welcome-footer")
+        bar.set_margin_start(24)
+        bar.set_margin_end(24)
+        bar.set_margin_top(12)
+        bar.set_margin_bottom(16)
+
+        self.progress = Gtk.Label(label="1 of 4")
+        self.progress.add_css_class("dim-label")
+        self.progress.set_hexpand(True)
+        self.progress.set_halign(Gtk.Align.START)
+        self.back = Gtk.Button(label="Back")
+        self.back.connect("clicked", lambda *_: self._show_page(self.index - 1))
+        self.next = Gtk.Button(label="Next")
+        self.next.add_css_class("suggested-action")
+        self.next.add_css_class("pill")
+        self.next.connect("clicked", self._next)
+        bar.append(self.progress)
+        bar.append(self.back)
+        bar.append(self.next)
+        return bar
+
+    def _show_page(self, index):
+        self.index = max(0, min(index, len(self.pages) - 1))
+        self.stack.set_visible_child_name(self.pages[self.index])
+        self.progress.set_label(f"{self.index + 1} of {len(self.pages)}")
+        self.back.set_sensitive(self.index > 0)
+        self.next.set_label("Start using Spectre" if self.index == len(self.pages) - 1 else "Next")
+
+    def _next(self, *_):
+        if self.index == len(self.pages) - 1:
+            self._complete()
+        else:
+            self._show_page(self.index + 1)
+
+    def _complete(self):
+        MARKER.parent.mkdir(parents=True, exist_ok=True)
+        MARKER.write_text("completed\n")
+        self.win.close()
+
+    def _close_request(self, *_):
+        # Closing does not permanently dismiss the first-run assistant. The user
+        # must explicitly finish the short flow to create the completion marker.
+        return False
+
+    def _dark_changed(self, row, _pspec):
+        self.interface.set_string("color-scheme", "prefer-dark" if row.get_active() else "default")
+        spawn("spectre-appearance-sync", "--once")
+
+    def _css(self):
+        provider = Gtk.CssProvider()
+        provider.load_from_data(b"""
+        .welcome-hero {
+            background: linear-gradient(145deg, rgba(8,34,70,0.92), rgba(2,10,24,0.62));
+            border: 1px solid rgba(71,181,255,0.22);
+            border-radius: 26px;
+            padding: 24px 20px 22px 20px;
+        }
+        .welcome-title { font-size: 30px; font-weight: 900; color: #f4f9ff; }
+        .welcome-subtitle { font-size: 14px; color: #9cb6d2; }
+        .welcome-footer { border-top: 1px solid rgba(120,160,205,0.12); }
+        """)
+        display = Gdk.Display.get_default()
+        if display:
+            Gtk.StyleContext.add_provider_for_display(display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+
+if __name__ == "__main__":
+    raise SystemExit(Welcome().run(sys.argv))

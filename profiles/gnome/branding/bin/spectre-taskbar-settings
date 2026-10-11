@@ -1,0 +1,366 @@
+#!/usr/bin/env python3
+"""Spectre Taskbar Settings — production-safe Dash-to-Dock configuration."""
+import sys
+
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gio, Gtk
+
+APP_ID = "com.spectre.TaskbarSettings"
+DOCK_SCHEMA = "org.gnome.shell.extensions.dash-to-dock"
+
+
+class SpectreTaskbarSettings(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        source = Gio.SettingsSchemaSource.get_default()
+        self.schema = source.lookup(DOCK_SCHEMA, True) if source else None
+        self.settings = Gio.Settings.new(DOCK_SCHEMA) if self.schema else None
+        self.keys = set(self.settings.list_keys()) if self.settings else set()
+        self._syncing = False
+
+    def has(self, key):
+        return key in self.keys
+
+    def set_bool(self, key, value):
+        if self.settings and self.has(key):
+            self.settings.set_boolean(key, bool(value))
+
+    def set_int(self, key, value):
+        if self.settings and self.has(key):
+            self.settings.set_int(key, int(value))
+
+    def set_double(self, key, value):
+        if self.settings and self.has(key):
+            self.settings.set_double(key, float(value))
+
+    def set_string(self, key, value):
+        if self.settings and self.has(key):
+            self.settings.set_string(key, str(value))
+
+    def do_activate(self):
+        if self.props.active_window:
+            self.props.active_window.present()
+            return
+
+        Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.DEFAULT)
+        win = Adw.PreferencesWindow(application=self)
+        win.set_title("Spectre Taskbar")
+        win.set_default_size(760, 760)
+        win.set_size_request(620, 540)
+
+        page = Adw.PreferencesPage(title="Taskbar", icon_name="view-grid-symbolic")
+        win.add(page)
+
+        if not self.settings:
+            missing = Adw.PreferencesGroup(title="Taskbar unavailable")
+            missing.add(Adw.ActionRow(
+                title="Dash-to-Dock settings were not found",
+                subtitle="The Spectre taskbar extension is missing or not installed correctly.",
+                icon_name="dialog-error-symbolic",
+            ))
+            page.add(missing)
+            win.present()
+            return
+
+        behavior = Adw.PreferencesGroup(
+            title="Behavior",
+            description="Choose how the taskbar uses screen space. Changes apply immediately.",
+        )
+        page.add(behavior)
+
+        self.behavior_buttons = self._segmented_row(
+            behavior,
+            "Visibility",
+            "Smart hide keeps the taskbar available on the desktop, slides it away for maximized windows, and reveals it again at the screen edge.",
+            ["Smart hide", "Always visible", "Auto-hide"],
+            self._behavior_changed,
+        )
+
+        self.position_buttons = self._segmented_row(
+            behavior,
+            "Position",
+            "Move the taskbar without changing its apps or behavior.",
+            ["Left", "Bottom", "Right"],
+            self._position_changed,
+        )
+
+        self.no_pressure = Adw.SwitchRow(
+            title="Reliable edge reveal",
+            subtitle="Hover the taskbar edge to reveal it immediately. Turn this off only if you prefer a deliberate push against the edge.",
+            icon_name="input-mouse-symbolic",
+        )
+        self.no_pressure.connect("notify::active", self._edge_reveal_changed)
+        behavior.add(self.no_pressure)
+
+        appearance = Adw.PreferencesGroup(
+            title="Appearance &amp; motion",
+            description="Spectre defaults favor a compact glass taskbar with deliberate, smooth motion.",
+        )
+        page.add(appearance)
+
+        self.icon_scale = self._scale_row(
+            appearance,
+            "Icon size",
+            "Recommended: 42 px",
+            "image-x-generic-symbolic",
+            32, 56, 2, 0,
+            self._icon_size_changed,
+        )
+
+        self.motion_scale = self._scale_row(
+            appearance,
+            "Slide duration",
+            "Controls the hide/reveal transition instead of an abrupt pop.",
+            "media-playback-start-symbolic",
+            0.16, 0.40, 0.02, 2,
+            self._motion_changed,
+        )
+
+        self.glass = Adw.SwitchRow(
+            title="Glass taskbar",
+            subtitle="Use dynamic transparency while keeping icons and running indicators readable.",
+            icon_name="weather-clear-symbolic",
+        )
+        self.glass.connect("notify::active", self._glass_changed)
+        appearance.add(self.glass)
+
+        self.opacity_scale = self._scale_row(
+            appearance,
+            "Floating opacity",
+            "Lower values reveal more of the wallpaper when no window is touching the taskbar.",
+            "preferences-desktop-wallpaper-symbolic",
+            0.10, 0.34, 0.02, 2,
+            self._opacity_changed,
+        )
+
+        content = Adw.PreferencesGroup(
+            title="Content",
+            description="Choose what the taskbar is allowed to show.",
+        )
+        page.add(content)
+
+        self.show_favorites = self._switch(content, "Favorite applications", "Keep pinned apps in the taskbar.", "show-favorites")
+        self.show_running = self._switch(content, "Running applications", "Show apps that currently have windows open.", "show-running")
+        self.show_apps = self._switch(content, "Applications button", "Keep the app-grid button at the end of the taskbar.", "show-show-apps-button")
+        self.isolate_workspaces = self._switch(content, "Current workspace only", "Show running windows from the active workspace only.", "isolate-workspaces")
+
+        maintenance = Adw.PreferencesGroup(title="Maintenance")
+        reset = Adw.ActionRow(
+            title="Restore Spectre taskbar defaults",
+            subtitle="Smart hide with instant edge reveal, left position, fast 160 ms slide, 42 px icons and translucent glass.",
+            icon_name="view-refresh-symbolic",
+            activatable=True,
+        )
+        reset.connect("activated", lambda *_: self.apply_spectre_defaults())
+        maintenance.add(reset)
+        page.add(maintenance)
+
+        self._sync_from_settings()
+        win.present()
+
+    def _segmented_row(self, group, title, subtitle, labels, callback):
+        row = Adw.ActionRow(title=title, subtitle=subtitle)
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        box.add_css_class("linked")
+        box.set_valign(Gtk.Align.CENTER)
+        buttons = []
+        first = None
+        for index, label in enumerate(labels):
+            button = Gtk.ToggleButton(label=label)
+            if first is None:
+                first = button
+            else:
+                button.set_group(first)
+            button.connect("toggled", callback, index)
+            box.append(button)
+            buttons.append(button)
+        row.add_suffix(box)
+        group.add(row)
+        return buttons
+
+    def _scale_row(self, group, title, subtitle, icon, minimum, maximum, step, digits, callback):
+        row = Adw.ActionRow(title=title, subtitle=subtitle, icon_name=icon)
+        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, minimum, maximum, step)
+        scale.set_draw_value(True)
+        scale.set_digits(digits)
+        scale.set_size_request(230, -1)
+        scale.set_valign(Gtk.Align.CENTER)
+        scale.connect("value-changed", callback)
+        row.add_suffix(scale)
+        group.add(row)
+        return scale
+
+    def _switch(self, group, title, subtitle, key):
+        row = Adw.SwitchRow(title=title, subtitle=subtitle)
+        if not self.has(key):
+            row.set_sensitive(False)
+        else:
+            row.set_active(self.settings.get_boolean(key))
+            row.connect("notify::active", lambda obj, _pspec, k=key: self.set_bool(k, obj.get_active()))
+        group.add(row)
+        return row
+
+    def _select(self, buttons, index):
+        index = max(0, min(index, len(buttons) - 1))
+        buttons[index].set_active(True)
+
+    def _sync_from_settings(self):
+        self._syncing = True
+        try:
+            fixed = self.settings.get_boolean("dock-fixed") if self.has("dock-fixed") else False
+            autohide = self.settings.get_boolean("autohide") if self.has("autohide") else False
+            intellihide = self.settings.get_boolean("intellihide") if self.has("intellihide") else True
+            behavior = 1 if fixed else (2 if autohide and not intellihide else 0)
+            self._select(self.behavior_buttons, behavior)
+
+            position = self.settings.get_string("dock-position") if self.has("dock-position") else "LEFT"
+            self._select(self.position_buttons, {"LEFT": 0, "BOTTOM": 1, "RIGHT": 2}.get(position, 0))
+
+            if self.has("require-pressure-to-show"):
+                self.no_pressure.set_active(not self.settings.get_boolean("require-pressure-to-show"))
+                self.no_pressure.set_sensitive(not fixed)
+            else:
+                self.no_pressure.set_sensitive(False)
+
+            if self.has("dash-max-icon-size"):
+                self.icon_scale.set_value(self.settings.get_int("dash-max-icon-size"))
+            else:
+                self.icon_scale.set_sensitive(False)
+
+            if self.has("animation-time"):
+                self.motion_scale.set_value(self.settings.get_double("animation-time"))
+            else:
+                self.motion_scale.set_sensitive(False)
+
+            dynamic = self.has("transparency-mode") and self.settings.get_string("transparency-mode") == "DYNAMIC"
+            self.glass.set_active(dynamic)
+            if not self.has("transparency-mode"):
+                self.glass.set_sensitive(False)
+
+            if self.has("min-alpha"):
+                self.opacity_scale.set_value(self.settings.get_double("min-alpha"))
+            else:
+                self.opacity_scale.set_sensitive(False)
+        finally:
+            self._syncing = False
+
+    def _behavior_changed(self, button, index):
+        if self._syncing or not button.get_active():
+            return
+        if index == 1:  # always visible
+            self.set_bool("dock-fixed", True)
+            self.set_bool("intellihide", False)
+            self.set_bool("autohide", False)
+        elif index == 2:  # always auto-hide
+            self.set_bool("dock-fixed", False)
+            self.set_bool("intellihide", False)
+            self.set_bool("autohide", True)
+            self.set_bool("autohide-in-fullscreen", True)
+        else:  # smart hide: dodge maximized windows + keep mouse-edge reveal alive
+            self.set_bool("dock-fixed", False)
+            self.set_bool("intellihide", True)
+            self.set_string("intellihide-mode", "MAXIMIZED_WINDOWS")
+            self.set_bool("autohide", True)
+            self.set_bool("autohide-in-fullscreen", True)
+        if hasattr(self, "no_pressure"):
+            self.no_pressure.set_sensitive(index != 1 and self.has("require-pressure-to-show"))
+
+    def _position_changed(self, button, index):
+        if self._syncing or not button.get_active():
+            return
+        self.set_string("dock-position", ["LEFT", "BOTTOM", "RIGHT"][index])
+
+    def _edge_reveal_changed(self, row, _pspec):
+        if self._syncing:
+            return
+        easy = row.get_active()
+        self.set_bool("require-pressure-to-show", not easy)
+        if self.has("pressure-threshold"):
+            # Keep push-to-reveal usable for users who explicitly prefer it.
+            self.set_double("pressure-threshold", 35.0)
+
+    def _icon_size_changed(self, scale):
+        if not self._syncing:
+            self.set_int("dash-max-icon-size", round(scale.get_value()))
+
+    def _motion_changed(self, scale):
+        if self._syncing:
+            return
+        value = float(scale.get_value())
+        self.set_double("animation-time", value)
+        # A tiny reveal delay prevents accidental edge flashes; a longer hide
+        # grace period lets the pointer enter the dock after it slides onscreen.
+        self.set_double("show-delay", 0.00)
+        self.set_double("hide-delay", min(0.20, max(0.10, value * 0.75)))
+
+    def _glass_changed(self, row, _pspec):
+        if self._syncing:
+            return
+        if row.get_active():
+            self.set_string("transparency-mode", "DYNAMIC")
+            self.set_bool("customize-alphas", True)
+            self.set_bool("custom-background-color", True)
+            self.set_string("background-color", "#020b18")
+            self._apply_opacity(float(self.opacity_scale.get_value()))
+        else:
+            self.set_string("transparency-mode", "FIXED")
+            self.set_bool("customize-alphas", False)
+            self.set_double("background-opacity", 0.68)
+
+    def _opacity_changed(self, scale):
+        if not self._syncing and self.glass.get_active():
+            self._apply_opacity(float(scale.get_value()))
+
+    def _apply_opacity(self, minimum):
+        minimum = max(0.08, min(minimum, 0.40))
+        maximum = max(0.52, min(0.72, minimum + 0.42))
+        self.set_bool("customize-alphas", True)
+        self.set_double("min-alpha", minimum)
+        self.set_double("max-alpha", maximum)
+        self.set_double("background-opacity", max(0.34, minimum + 0.18))
+
+    def apply_spectre_defaults(self):
+        defaults = {
+            "dock-position": (self.set_string, "LEFT"),
+            "extend-height": (self.set_bool, False),
+            "dock-fixed": (self.set_bool, False),
+            "intellihide": (self.set_bool, True),
+            "intellihide-mode": (self.set_string, "MAXIMIZED_WINDOWS"),
+            "autohide": (self.set_bool, True),
+            "autohide-in-fullscreen": (self.set_bool, True),
+            "require-pressure-to-show": (self.set_bool, False),
+            "pressure-threshold": (self.set_double, 35.0),
+            "animation-time": (self.set_double, 0.16),
+            "show-delay": (self.set_double, 0.00),
+            "hide-delay": (self.set_double, 0.12),
+            "dash-max-icon-size": (self.set_int, 42),
+            "icon-size-fixed": (self.set_bool, True),
+            "transparency-mode": (self.set_string, "DYNAMIC"),
+            "customize-alphas": (self.set_bool, True),
+            "min-alpha": (self.set_double, 0.16),
+            "max-alpha": (self.set_double, 0.58),
+            "background-opacity": (self.set_double, 0.36),
+            "custom-background-color": (self.set_bool, True),
+            "background-color": (self.set_string, "#020b18"),
+            "custom-theme-shrink": (self.set_bool, True),
+            "show-trash": (self.set_bool, False),
+            "show-mounts": (self.set_bool, False),
+            "show-show-apps-button": (self.set_bool, True),
+            "show-apps-at-top": (self.set_bool, False),
+            "show-favorites": (self.set_bool, True),
+            "show-running": (self.set_bool, True),
+            "isolate-workspaces": (self.set_bool, False),
+            "running-indicator-style": (self.set_string, "DOTS"),
+            "click-action": (self.set_string, "focus-minimize-or-previews"),
+            "show-windows-preview": (self.set_bool, True),
+        }
+        for key, (setter, value) in defaults.items():
+            if self.has(key):
+                setter(key, value)
+        self._sync_from_settings()
+
+
+if __name__ == "__main__":
+    raise SystemExit(SpectreTaskbarSettings().run(sys.argv))

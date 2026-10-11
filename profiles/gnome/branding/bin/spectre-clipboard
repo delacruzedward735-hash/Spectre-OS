@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Spectre Clipboard — session-only text clipboard history for Super+V.
+
+History is intentionally memory-only: it is never written to disk and disappears
+when the GNOME session ends. Text entries are bounded to 20 items and 64 KiB.
+"""
+from __future__ import annotations
+import sys
+import gi
+gi.require_version('Gtk','4.0'); gi.require_version('Adw','1')
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+
+APP_ID='com.spectre.Clipboard'
+MAX_ITEMS=20; MAX_CHARS=65536
+
+class ClipboardApp(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self.history=[]; self.clipboard=None; self.win=None; self.listbox=None
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        display=Gdk.Display.get_default()
+        if display:
+            self.clipboard=display.get_clipboard()
+            self.clipboard.connect('changed', self._changed)
+            self._capture()
+    def do_command_line(self, command_line):
+        args=command_line.get_arguments()[1:]
+        if '--background' not in args:
+            self._show()
+        command_line.set_exit_status(0)
+        return 0
+    def _changed(self,*_): self._capture()
+    def _capture(self):
+        if not self.clipboard: return
+        self.clipboard.read_text_async(None, self._read_done)
+    def _read_done(self, clipboard, result):
+        try: text=clipboard.read_text_finish(result)
+        except GLib.Error: return
+        if not text: return
+        text=text[:MAX_CHARS]
+        if self.history and self.history[0]==text: return
+        self.history=[text]+[x for x in self.history if x!=text]
+        del self.history[MAX_ITEMS:]
+        self._refresh()
+    def _show(self):
+        if self.win:
+            self._refresh(); self.win.present(); return
+        self.win=Adw.ApplicationWindow(application=self,title='Spectre Clipboard'); self.win.set_default_size(640,620)
+        tv=Adw.ToolbarView(); hb=Adw.HeaderBar(); hb.set_title_widget(Adw.WindowTitle(title='Clipboard',subtitle='Session-only history — nothing is saved to disk')); tv.add_top_bar(hb)
+        clear=Gtk.Button(label='Clear'); clear.connect('clicked',self._clear); hb.pack_end(clear)
+        box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=12); box.set_margin_top(16); box.set_margin_bottom(16); box.set_margin_start(16); box.set_margin_end(16)
+        notice=Gtk.Label(label='Select an item to copy it again. History is cleared automatically when you sign out.'); notice.set_xalign(0); notice.set_wrap(True); notice.add_css_class('dim-label'); box.append(notice)
+        self.listbox=Gtk.ListBox(); self.listbox.set_selection_mode(Gtk.SelectionMode.NONE); self.listbox.add_css_class('boxed-list')
+        sc=Gtk.ScrolledWindow(); sc.set_policy(Gtk.PolicyType.NEVER,Gtk.PolicyType.AUTOMATIC); sc.set_child(self.listbox); box.append(sc)
+        tv.set_content(box); self.win.set_content(tv); self._refresh(); self.win.present()
+    def _clear(self,*_): self.history.clear(); self._refresh()
+    def _refresh(self):
+        if not self.listbox: return
+        child=self.listbox.get_first_child()
+        while child:
+            nxt=child.get_next_sibling(); self.listbox.remove(child); child=nxt
+        if not self.history:
+            self.listbox.append(Adw.ActionRow(title='Clipboard history is empty',subtitle='Copy text and it will appear here for this session.'))
+            return
+        for text in self.history:
+            one=' '.join(text.strip().splitlines())
+            title=one[:100] if one else '(blank text)'
+            subtitle=f'{len(text)} characters'
+            row=Adw.ActionRow(title=title,subtitle=subtitle,activatable=True)
+            row.add_prefix(Gtk.Image.new_from_icon_name('edit-copy-symbolic'))
+            row.connect('activated',self._reuse,text)
+            self.listbox.append(row)
+    def _reuse(self,_row,text):
+        if self.clipboard: self.clipboard.set(text)
+        if self.win: self.win.close()
+
+if __name__=='__main__': raise SystemExit(ClipboardApp().run(sys.argv))

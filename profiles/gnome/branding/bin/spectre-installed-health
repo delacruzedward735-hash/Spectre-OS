@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+set -u
+
+failures=0
+ok(){ printf '[OK]   %s\n' "$*"; }
+warn(){ printf '[WARN] %s\n' "$*"; }
+fail(){ printf '[FAIL] %s\n' "$*"; failures=$((failures+1)); }
+
+spectre_find_admin_cmd() {
+  command -v "$1" 2>/dev/null || { [[ -x "/usr/sbin/$1" ]] && printf '/usr/sbin/%s\n' "$1"; } || { [[ -x "/sbin/$1" ]] && printf '/sbin/%s\n' "$1"; }
+}
+
+# Resolve the actual desktop/invoking account even when this utility runs
+# through sudo or pkexec.
+spectre_health_user() {
+  local candidate=""
+
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
+    candidate="$SUDO_USER"
+  elif [[ -n "${PKEXEC_UID:-}" ]]; then
+    candidate="$(getent passwd "$PKEXEC_UID" 2>/dev/null | cut -d: -f1)"
+  elif [[ -n "${USER:-}" ]]; then
+    candidate="$USER"
+  else
+    candidate="$(id -un 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$candidate" ]] && id "$candidate" >/dev/null 2>&1; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  return 1
+}
+
+HEALTH_USER="$(spectre_health_user || true)"
+
+# Return 0 when a root-owned file is verified, 1 when it is truly absent, and
+# 2 when a normal user cannot traverse the root-only filesystem to verify it.
+spectre_root_file_state() {
+  local path="$1" parent
+  [[ -s "$path" ]] && return 0
+  if (( EUID == 0 )); then return 1; fi
+  if [[ -x /usr/bin/sudo ]] && /usr/bin/sudo -n test -s "$path" 2>/dev/null; then return 0; fi
+  parent="$(dirname "$path")"
+  [[ -x "$parent" ]] || return 2
+  return 1
+}
+
+printf '[Spectre] Installed-system health\n\n'
+
+if [[ -f /etc/spectre-installation ]]; then
+  ok 'installation provenance marker present'
+  sed -n '1,24p' /etc/spectre-installation
+else
+  fail '/etc/spectre-installation is missing'
+fi
+
+if grep -q '^ID=spectre$' /etc/os-release 2>/dev/null; then ok 'Spectre OS identity'; else fail 'OS identity is not Spectre'; fi
+
+root_uid="$(stat -c %u / 2>/dev/null || true)"
+root_gid="$(stat -c %g / 2>/dev/null || true)"
+root_mode="$(stat -c %a / 2>/dev/null || true)"
+if [[ "$root_uid" == 0 && "$root_gid" == 0 && "$root_mode" == 755 ]]; then
+  ok 'root directory ownership: root:root mode 0755'
+else
+  fail "root directory ownership is ${root_uid:-?}:${root_gid:-?} mode ${root_mode:-?}; expected 0:0 mode 755"
+fi
+
+root_fs="$(findmnt -nro FSTYPE / 2>/dev/null || true)"
+root_src="$(findmnt -nro SOURCE / 2>/dev/null || true)"
+root_opts="$(findmnt -nro OPTIONS / 2>/dev/null || true)"
+if [[ "$root_fs" == ext4 && "$root_src" != overlay && "$root_src" == /dev/* ]]; then
+  ok "installed root filesystem: $root_src ($root_fs)"
+else
+  fail "root does not look like an installed ext4 system: source=${root_src:-unknown} fs=${root_fs:-unknown}"
+fi
+if [[ ",$root_opts," == *,rw,* ]]; then ok 'installed root filesystem mounted read-write'; else fail 'installed root filesystem is not read-write'; fi
+
+if findmnt -rn /run/live/medium >/dev/null 2>&1 || findmnt -rn /lib/live/mount/medium >/dev/null 2>&1; then
+  fail 'live installation media is mounted as part of the running environment'
+else
+  ok 'not running as a live-boot session'
+fi
+if findmnt -rn /run/live/rootfs >/dev/null 2>&1 || findmnt -rn /run/live/overlay >/dev/null 2>&1; then
+  fail 'live overlay/rootfs mounts leaked into installed system'
+else
+  ok 'no live overlay/rootfs mounts'
+fi
+
+install_get(){ sed -n "s/^$1=//p" /etc/spectre-installation 2>/dev/null | head -1; }
+# SPECTRE_REALOS_UUID_V1
+spectre_device_uuid(){
+  local dev="${1:-}" value="" lsblk_bin="" blkid_bin=""
+  [[ "$dev" == /dev/* ]] || { printf '%s' ""; return 0; }
+  lsblk_bin="$(command -v lsblk 2>/dev/null || true)"
+  if [[ -n "$lsblk_bin" ]]; then
+    value="$("$lsblk_bin" -dnro UUID "$dev" 2>/dev/null | awk 'NF { print; exit }' || true)"
+  fi
+  if [[ -z "$value" ]]; then
+    blkid_bin="$(spectre_find_admin_cmd blkid || true)"
+    [[ -n "$blkid_bin" ]] && value="$("$blkid_bin" -s UUID -o value "$dev" 2>/dev/null || true)"
+  fi
+  printf '%s' "$value"
+}
+
+expected_root_uuid="$(install_get ROOT_UUID)"
+expected_efi_uuid="$(install_get EFI_UUID)"
+install_mode="$(install_get INSTALL_MODE)"
+expected_hostname="$(install_get HOSTNAME)"
+expected_timezone="$(install_get TIMEZONE)"
+
+actual_root_uuid="$(findmnt -nro UUID / 2>/dev/null || true)"
+[[ -n "$actual_root_uuid" ]] || actual_root_uuid="$(spectre_device_uuid "$root_src")"
+if [[ -n "$expected_root_uuid" && "$actual_root_uuid" == "$expected_root_uuid" ]]; then
+  ok 'installed root UUID matches installation provenance'
+else
+  fail "root UUID mismatch: expected=${expected_root_uuid:-missing} actual=${actual_root_uuid:-unknown}"
+fi
+if [[ -n "$expected_root_uuid" ]] && grep -Eq "^UUID=${expected_root_uuid}[[:space:]]+/[[:space:]]+ext4" /etc/fstab 2>/dev/null; then
+  ok 'fstab root entry matches installed root UUID'
+else
+  fail 'fstab root entry does not match installation provenance'
+fi
+
+if findmnt -rn /boot/efi >/dev/null 2>&1; then
+  ok '/boot/efi mounted'
+  efi_src="$(findmnt -nro SOURCE /boot/efi 2>/dev/null || true)"
+  actual_efi_uuid="$(findmnt -nro UUID /boot/efi 2>/dev/null || true)"
+  [[ -n "$actual_efi_uuid" ]] || actual_efi_uuid="$(spectre_device_uuid "$efi_src")"
+  if [[ -n "$expected_efi_uuid" && "$actual_efi_uuid" == "$expected_efi_uuid" ]]; then ok 'EFI UUID matches installation provenance'; else fail "EFI UUID mismatch: expected=${expected_efi_uuid:-missing} actual=${actual_efi_uuid:-unknown}"; fi
+  if [[ "$install_mode" == alongside ]]; then
+    if spectre_root_file_state /boot/efi/EFI/Spectre/grubx64.efi; then
+      ok 'Spectre UEFI loader present beside existing OS'
+    else
+      state=$?; [[ "$state" == 2 ]] && warn 'Spectre UEFI loader cannot be directly inspected without privilege' || fail 'EFI/Spectre/grubx64.efi is missing'
+    fi
+    if spectre_root_file_state /boot/efi/EFI/Microsoft/Boot/bootmgfw.efi; then ok 'Windows Boot Manager preserved'; else warn 'Windows Boot Manager not directly verified (only required for alongside-Windows installs)'; fi
+  else
+    if spectre_root_file_state /boot/efi/EFI/BOOT/BOOTX64.EFI; then
+      ok 'portable UEFI fallback loader present'
+    else
+      state=$?; [[ "$state" == 2 ]] && warn 'portable UEFI fallback loader cannot be directly inspected without privilege' || fail 'EFI/BOOT/BOOTX64.EFI is missing'
+    fi
+  fi
+else
+  warn '/boot/efi is not mounted (acceptable only for BIOS-only boot; unexpected for the normal UEFI qualification path)'
+fi
+
+[[ -s /boot/grub/grub.cfg ]] && ok 'GRUB configuration present' || fail '/boot/grub/grub.cfg missing or empty'
+kernel="$(uname -r)"
+if [[ "$kernel" == *-spectre ]]; then ok "Spectre kernel running: $kernel"; else fail "running kernel is not Spectre-branded: $kernel"; fi
+[[ -e "/boot/vmlinuz-$kernel" ]] && ok 'matching installed kernel image present' || fail "missing /boot/vmlinuz-$kernel"
+[[ -e "/boot/initrd.img-$kernel" ]] && ok 'matching installed initramfs present' || fail "missing /boot/initrd.img-$kernel"
+[[ -d "/lib/modules/$kernel" ]] && ok 'matching kernel modules tree present' || fail "missing /lib/modules/$kernel"
+
+live_pkgs=()
+for p in live-boot live-boot-initramfs-tools live-config live-config-systemd; do
+  if dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed'; then live_pkgs+=("$p"); fi
+done
+if ((${#live_pkgs[@]})); then fail "live-only packages still installed: ${live_pkgs[*]}"; else ok 'live-only packages removed'; fi
+
+live_artifacts=(
+  /usr/local/sbin/spectre-installer
+  /usr/local/sbin/spectre-installer-backend
+  /usr/local/bin/spectre-installer-launcher
+  /usr/local/bin/spectre-live-installer-setup
+  /usr/share/applications/com.spectre.Installer.desktop
+  /etc/xdg/autostart/spectre-live-installer.desktop
+  /usr/share/pixmaps/spectre-installer.png
+  /etc/polkit-1/rules.d/49-spectre-installer.rules
+  /etc/sudoers.d/90-spectre-live
+)
+leaks=()
+for p in "${live_artifacts[@]}"; do [[ -e "$p" ]] && leaks+=("$p"); done
+for icon_size in 48 64 128 256 512; do
+  p="/usr/share/icons/hicolor/${icon_size}x${icon_size}/apps/spectre-installer.png"
+  [[ -e "$p" ]] && leaks+=("$p")
+done
+if ((${#leaks[@]})); then fail "live installer artifacts leaked into installed OS: ${leaks[*]}"; else ok 'live installer UI, policy and branding artifacts absent'; fi
+
+if [[ -e /usr/share/spectre/personal-apps.manifest || -e /usr/bin/swiftshare || -e /usr/bin/appsweep || -e /opt/codedev/apps/swiftshare || -e /opt/codedev/apps/appsweep ]]; then
+  fail 'legacy personal application payload exists in Spectre 1.0 core-only install'
+else
+  ok 'core-only policy: no bundled SwiftShare/AppSweep payload'
+fi
+if [[ -f /usr/share/spectre/managed-apps.manifest ]]; then
+  if grep -vE '^[[:space:]]*(#|$)' /usr/share/spectre/managed-apps.manifest | grep -q .; then
+    warn 'managed application registry contains locally added applications'
+  else
+    ok 'managed application framework present with empty default registry'
+  fi
+fi
+
+if command -v conky >/dev/null 2>&1 || pgrep -x conky >/dev/null 2>&1; then fail 'retired Conky monitor is present/running'; else ok 'retired Conky monitor absent'; fi
+command -v spectre-appearance-sync >/dev/null 2>&1 && ok 'appearance synchronization installed' || fail 'appearance synchronization missing'
+command -v spectre-desktop-apps >/dev/null 2>&1 && ok 'Desktop Apps & Icons installed' || fail 'Desktop Apps & Icons missing'
+command -v spectre-installed-qualification >/dev/null 2>&1 && ok 'installed persistence qualification utility present' || warn 'installed persistence qualification utility missing (expected on RC5.0+)'
+
+if systemctl is-active --quiet NetworkManager.service; then ok 'NetworkManager active'; else fail 'NetworkManager is not active'; fi
+if systemctl is-enabled networking.service 2>/dev/null | grep -qx masked; then ok 'legacy networking.service masked'; else fail 'legacy networking.service is not masked'; fi
+if systemctl is-active --quiet gdm3.service || systemctl is-active --quiet gdm.service; then ok 'GDM active'; else fail 'GDM is not active'; fi
+if [[ "$(systemctl get-default 2>/dev/null || true)" == graphical.target ]]; then ok 'graphical.target is the default boot target'; else fail 'default systemd target is not graphical.target'; fi
+
+if systemctl is-enabled --quiet spectre-boot-record.service 2>/dev/null; then ok 'installed boot provenance recorder enabled'; else warn 'installed boot provenance recorder is not enabled (expected on RC5.0+)'; fi
+if [[ -s /var/lib/spectre/last-boot ]]; then
+  ok 'installed boot provenance record present'
+  sed -n '1,12p' /var/lib/spectre/last-boot
+else
+  warn 'installed boot provenance record missing (expected after first RC5.0 installed boot)'
+fi
+
+failed_units="$(systemctl --failed --no-legend --plain 2>/dev/null | sed '/^[[:space:]]*$/d' || true)"
+if [[ -z "$failed_units" ]]; then ok 'no failed systemd units'; else fail 'failed systemd units detected'; printf '%s\n' "$failed_units"; fi
+
+machine_id="$(cat /etc/machine-id 2>/dev/null || true)"
+if [[ "$machine_id" =~ ^[0-9a-fA-F]{32}$ && "$machine_id" != 00000000000000000000000000000000 ]]; then ok 'machine-id is valid and persistent-looking'; else fail 'machine-id is missing or invalid'; fi
+if [[ -n "$expected_hostname" && "$(hostname)" == "$expected_hostname" ]]; then ok 'hostname matches installation choice'; else warn "hostname differs from install marker: expected=${expected_hostname:-unknown} actual=$(hostname)"; fi
+if command -v timedatectl >/dev/null 2>&1 && [[ -n "$expected_timezone" ]]; then
+  actual_timezone="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+  [[ "$actual_timezone" == "$expected_timezone" ]] && ok 'timezone matches installation choice' || warn "timezone differs: expected=$expected_timezone actual=${actual_timezone:-unknown}"
+fi
+
+if [[ -n "$HEALTH_USER" ]] && id "$HEALTH_USER" >/dev/null 2>&1; then
+  ok "logged-in account exists: $HEALTH_USER"
+  groups="$(id -nG "$HEALTH_USER" 2>/dev/null || true)"
+  [[ " $groups " == *' sudo '* ]] && ok 'logged-in account has sudo group' || warn 'logged-in account is not in sudo group'
+  home_dir="$(getent passwd "$HEALTH_USER" | cut -d: -f6)"
+  if [[ -d "$home_dir" ]]; then
+    ok "user home exists: $home_dir"
+  else
+    fail "user home is missing: ${home_dir:-unknown}"
+  fi
+  if [[ -n "$home_dir" && -d "$home_dir" ]]; then
+    owner="$(stat -c '%U:%G' "$home_dir" 2>/dev/null || true)"
+    [[ "$owner" == "$HEALTH_USER:"* ]] && ok "user home ownership is correct: $owner" || fail "user home ownership is unexpected: $owner"
+  fi
+else
+  warn 'could not determine the logged-in account'
+fi
+
+avail_bytes="$(df -B1 --output=avail / 2>/dev/null | tail -1 | tr -d ' ' || true)"
+if [[ "$avail_bytes" =~ ^[0-9]+$ ]]; then
+  if (( avail_bytes >= 1073741824 )); then ok 'at least 1 GiB free space remains on installed root'; elif (( avail_bytes >= 268435456 )); then warn 'installed root has less than 1 GiB free'; else fail 'installed root has less than 256 MiB free'; fi
+fi
+
+if [[ -f /etc/spectre-build ]]; then
+  ok 'runtime source/build provenance present'
+  grep -E '^(RUNTIME_SOURCE_SHA256|BUILD_ID|BUILD_MODE)=' /etc/spectre-build || true
+else
+  warn '/etc/spectre-build is missing'
+fi
+
+# RC5 daily-use foundation checks are warning-level unless they compromise
+# the proven installed root/boot path. They make hardware qualification more
+# informative without turning an optional laptop capability into a boot failure.
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl is-enabled --quiet fstrim.timer 2>/dev/null && ok 'periodic SSD TRIM timer enabled' || warn 'fstrim.timer is not enabled'
+  systemctl is-enabled --quiet spectre-maintenance.timer 2>/dev/null && ok 'Spectre maintenance timer enabled' || warn 'Spectre maintenance timer is not enabled'
+  systemctl is-enabled --quiet spectre-installed-sanitize.service 2>/dev/null && ok 'installed-runtime sanitizer enabled' || warn 'installed-runtime sanitizer is not enabled'
+  systemctl is-active --quiet power-profiles-daemon.service 2>/dev/null && ok 'power-profiles-daemon active' || warn 'power-profiles-daemon is not active on this hardware'
+fi
+if [[ -r /proc/swaps ]]; then
+  if awk 'NR>1 && $1 ~ /^\/dev\/zram/{found=1} END{exit !found}' /proc/swaps; then ok 'zram compressed swap active'; else warn 'zram compressed swap is not active'; fi
+fi
+if command -v ufw >/dev/null 2>&1; then
+  if ufw status 2>/dev/null | grep -q '^Status: active'; then ok 'desktop firewall active'; else warn 'desktop firewall is not active'; fi
+fi
+if command -v aa-status >/dev/null 2>&1; then
+  aa-status --enabled >/dev/null 2>&1 && ok 'AppArmor enabled' || warn 'AppArmor is not enabled'
+fi
+[[ -f /etc/systemd/journald.conf.d/90-spectre.conf ]] && ok 'bounded journal policy installed' || warn 'Spectre journald resource policy missing'
+
+if command -v dpkg >/dev/null 2>&1; then
+  audit="$(dpkg --audit 2>/dev/null || true)"
+  if [[ -z "$audit" ]]; then ok 'dpkg database has no audit findings'; else warn 'dpkg audit reported package state that should be reviewed:'; printf '%s\n' "$audit"; fi
+fi
+
+printf '\n'
+if ((failures)); then
+  printf '[FAIL] Installed-system health found %d blocking issue(s).\n' "$failures"
+  exit 1
+fi
+printf '[ok] Spectre installed-system health passed.\n'

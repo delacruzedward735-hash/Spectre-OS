@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Spectre Clipboard Service
+Comment=Session-only clipboard history for Super+V
+Exec=/usr/local/bin/spectre-clipboard --background
+OnlyShowIn=GNOME;
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=2

@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# SPECTRE_REALOS_AUDIT_V1
+set -u
+MODE="${1:-audit}"
+FAILS=0
+WARNS=0
+
+ok(){ printf '[PASS] %s\n' "$*"; }
+warn(){ printf '[WARN] %s\n' "$*"; WARNS=$((WARNS+1)); }
+bad(){ printf '[FAIL] %s\n' "$*"; FAILS=$((FAILS+1)); }
+
+echo "============================================================"
+echo " Spectre OS 1.0 — Real Installed-System Audit"
+echo "============================================================"
+
+if command -v spectre-installed-health >/dev/null 2>&1; then
+  spectre-installed-health && ok "installed-health gate" || bad "installed-health gate failed"
+else
+  bad "spectre-installed-health missing"
+fi
+
+if command -v spectre-installed-qualification >/dev/null 2>&1; then
+  spectre-installed-qualification && ok "installed qualification gate" || bad "installed qualification gate failed"
+else
+  warn "spectre-installed-qualification missing"
+fi
+
+rootfs="$(findmnt -nro FSTYPE / 2>/dev/null || true)"
+[[ "$rootfs" != overlay && "$rootfs" != squashfs ]] && ok "persistent installed root" || bad "live filesystem detected"
+
+failed="$(systemctl --failed --no-legend --plain 2>/dev/null | sed '/^[[:space:]]*$/d' || true)"
+[[ -z "$failed" ]] && ok "no failed system services" || { printf '%s\n' "$failed"; bad "failed services exist"; }
+
+for unit in NetworkManager.service gdm.service ufw.service apparmor.service; do
+  systemctl is-active --quiet "$unit" 2>/dev/null && ok "$unit active" || bad "$unit inactive"
+done
+
+STATE_DIR="/var/lib/spectre"
+STATE_FILE="$STATE_DIR/realos-power-cycle-v1"
+BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+
+case "$MODE" in
+  audit|"") ;;
+  --record-power-cycle)
+    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+      bad "--record-power-cycle requires sudo"
+    else
+      install -d -m 0755 "$STATE_DIR"
+      printf 'BOOT_ID=%s\nRECORDED_AT=%s\n' "$BOOT_ID" "$(date -Is)" > "$STATE_FILE"
+      chmod 0644 "$STATE_FILE"
+      ok "cold-boot checkpoint recorded"
+      echo "NEXT: sudo poweroff; physically power on; then:"
+      echo "  sudo spectre-real-os-audit --verify-power-cycle"
+    fi
+    ;;
+  --verify-power-cycle)
+    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+      bad "--verify-power-cycle requires sudo"
+    elif [[ ! -f "$STATE_FILE" ]]; then
+      bad "cold-boot checkpoint missing"
+    else
+      OLD_ID="$(sed -n 's/^BOOT_ID=//p' "$STATE_FILE" | head -1)"
+      if [[ -n "$OLD_ID" && -n "$BOOT_ID" && "$OLD_ID" != "$BOOT_ID" ]]; then
+        ok "boot ID changed across shutdown/power-on"
+        rm -f "$STATE_FILE"
+      else
+        bad "boot ID did not change; cold boot not proven"
+      fi
+    fi
+    ;;
+  *) bad "unknown mode: $MODE" ;;
+esac
+
+echo "============================================================"
+if (( FAILS == 0 )); then
+  echo " SPECTRE REAL INSTALLED AUDIT: PASS"
+  (( WARNS == 0 )) || echo " WARNINGS: $WARNS"
+  echo "============================================================"
+  exit 0
+fi
+echo " SPECTRE REAL INSTALLED AUDIT: FAIL ($FAILS blocker(s))"
+(( WARNS == 0 )) || echo " WARNINGS: $WARNS"
+echo "============================================================"
+exit 1

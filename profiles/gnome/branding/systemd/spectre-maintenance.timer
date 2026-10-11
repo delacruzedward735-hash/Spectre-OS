@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly Spectre OS maintenance
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=7d
+RandomizedDelaySec=45min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

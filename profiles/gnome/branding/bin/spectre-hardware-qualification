@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -u
+pass=0; warn=0; fail=0
+line(){ printf '%-30s %-7s %s\n' "$1" "$2" "${3:-}"; }
+ok(){ pass=$((pass+1)); line "$1" PASS "$2"; }
+warning(){ warn=$((warn+1)); line "$1" WARN "$2"; }
+bad(){ fail=$((fail+1)); line "$1" FAIL "$2"; }
+info(){ line "$1" INFO "$2"; }
+
+printf 'Spectre Hardware Qualification\n'
+printf '==============================\n'
+
+arch="$(uname -m 2>/dev/null || true)"
+[[ "$arch" == x86_64 ]] && ok 'Architecture' "$arch" || bad 'Architecture' "${arch:-unknown}"
+[[ "$(uname -r)" == *-spectre* ]] && ok 'Spectre kernel' "$(uname -r)" || bad 'Spectre kernel' "$(uname -r)"
+
+cpu="$(lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -1)"
+[[ -n "$cpu" ]] && ok 'Processor detection' "$cpu" || warning 'Processor detection' unavailable
+
+gpu_lines="$(lspci -k 2>/dev/null | grep -A3 -E 'VGA compatible controller|3D controller|Display controller' || true)"
+gpu_count="$(printf '%s\n' "$gpu_lines" | grep -Ec 'VGA compatible controller|3D controller|Display controller' || true)"
+if (( gpu_count > 0 )); then ok 'Graphics adapters' "$gpu_count detected"; else bad 'Graphics adapters' 'none detected'; fi
+if printf '%s\n' "$gpu_lines" | grep -q 'Kernel driver in use:'; then
+  drivers="$(printf '%s\n' "$gpu_lines" | sed -n 's/.*Kernel driver in use:[[:space:]]*//p' | paste -sd, -)"
+  ok 'Graphics kernel driver' "${drivers:-loaded}"
+else
+  warning 'Graphics kernel driver' 'no bound driver reported by lspci'
+fi
+
+if command -v glxinfo >/dev/null 2>&1 && [[ -n "${DISPLAY:-}" ]]; then
+  renderer="$(glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string:[[:space:]]*//p' | head -1)"
+  if [[ -n "$renderer" ]]; then
+    if [[ "$renderer" =~ llvmpipe|softpipe ]]; then warning '3D renderer' "$renderer (software/QEMU is acceptable)"; else ok '3D renderer' "$renderer"; fi
+  else warning '3D renderer' 'not reported'; fi
+else
+  info '3D renderer' 'check requires a graphical session'
+fi
+
+if (( gpu_count > 1 )); then
+  systemctl is-active --quiet switcheroo-control.service 2>/dev/null && ok 'Hybrid GPU switching' 'switcheroo-control active' || warning 'Hybrid GPU switching' 'multiple GPUs detected; switcheroo-control inactive'
+else
+  info 'Hybrid GPU switching' 'single GPU detected / not required'
+fi
+
+systemctl is-active --quiet NetworkManager.service 2>/dev/null && ok 'NetworkManager' active || bad 'NetworkManager' inactive
+net_count="$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null | grep -Ev ':(loopback|tun|bridge):' | wc -l || true)"
+(( net_count > 0 )) && ok 'Network adapters' "$net_count visible to NetworkManager" || warning 'Network adapters' 'none visible'
+
+if systemctl --user is-active --quiet pipewire.service 2>/dev/null || pgrep -x pipewire >/dev/null 2>&1; then ok 'PipeWire' active; else warning 'PipeWire' inactive; fi
+if systemctl --user is-active --quiet wireplumber.service 2>/dev/null || pgrep -x wireplumber >/dev/null 2>&1; then ok 'WirePlumber' active; else warning 'WirePlumber' inactive; fi
+
+if command -v lsusb >/dev/null 2>&1; then ok 'USB enumeration' "$(lsusb 2>/dev/null | wc -l) device(s)"; else warning 'USB enumeration' 'lsusb unavailable'; fi
+
+if compgen -G '/sys/class/power_supply/BAT*' >/dev/null; then
+  cap="$(cat /sys/class/power_supply/BAT*/capacity 2>/dev/null | head -1)"
+  ok 'Battery' "${cap:-?}% detected"
+  systemctl is-active --quiet power-profiles-daemon.service 2>/dev/null && ok 'Power profiles' active || warning 'Power profiles' inactive
+else
+  info 'Battery' 'not present (desktop/VM is valid)'
+fi
+
+if command -v bluetoothctl >/dev/null 2>&1 && bluetoothctl list 2>/dev/null | grep -q '^Controller '; then
+  systemctl is-active --quiet bluetooth.service 2>/dev/null && ok 'Bluetooth' 'controller + service active' || warning 'Bluetooth' 'controller present, service inactive'
+else
+  info 'Bluetooth' 'no controller detected'
+fi
+
+if grep -qi 'touchpad' /proc/bus/input/devices 2>/dev/null; then ok 'Touchpad' detected; else info 'Touchpad' 'not detected / VM or desktop'; fi
+
+root_src="$(findmnt -nro SOURCE / 2>/dev/null || true)"
+[[ -n "$root_src" ]] && ok 'Root storage' "$root_src" || bad 'Root storage' unknown
+
+fw_fail="$(journalctl -k -b --no-pager 2>/dev/null | grep -Eic 'firmware.*(failed|missing|error)' || true)"
+if [[ "$fw_fail" =~ ^[0-9]+$ ]] && (( fw_fail == 0 )); then ok 'Firmware load log' 'no obvious failures'; else warning 'Firmware load log' "$fw_fail warning line(s); review spectre-hardware"; fi
+
+failed_units="$(systemctl --failed --no-legend --plain 2>/dev/null | awk 'NF{n++} END{print n+0}')"
+[[ "$failed_units" == 0 ]] && ok 'Failed system units' 0 || warning 'Failed system units' "$failed_units"
+
+printf '\nSummary: %d PASS, %d WARN, %d FAIL\n' "$pass" "$warn" "$fail"
+if (( fail )); then
+  printf 'HARDWARE READINESS: FAILED\n'; exit 1
+elif (( warn )); then
+  printf 'HARDWARE READINESS: READY WITH WARNINGS\n'; exit 0
+else
+  printf 'HARDWARE READINESS: READY\n'; exit 0
+fi

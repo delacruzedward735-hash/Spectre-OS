@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Install Spectre's Windows-familiar shortcut profile once. User changes are
+# never overwritten by normal updates; --force is an explicit reset action.
+set -u
+force=0; [[ "${1:-}" == '--force' ]] && force=1
+schema_exists(){ gsettings list-schemas 2>/dev/null | grep -Fxq "$1"; }
+key_exists(){ gsettings list-keys "$1" 2>/dev/null | grep -Fxq "$2"; }
+gset(){ local s="$1" k="$2" v="$3"; schema_exists "$s" && key_exists "$s" "$k" && gsettings set "$s" "$k" "$v" >/dev/null 2>&1 || true; }
+files_path='/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/spectre-files/'
+files_schema="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$files_path"
+repair_files_shortcut() {
+  # Existing Spectre users may already have the old raw Nautilus command stored
+  # while windows-shortcuts-initialized=true. Repair only Spectre's own Files
+  # binding; never reset unrelated user-created custom shortcuts.
+  local command='' binding=''
+  command="$(gsettings get "$files_schema" command 2>/dev/null || true)"
+  binding="$(gsettings get "$files_schema" binding 2>/dev/null || true)"
+  if [[ "$command" == "'nautilus --new-window'" || "$command" == "'nautilus'" || -z "$command" ]]; then
+    gsettings set "$files_schema" name 'Spectre: Files' >/dev/null 2>&1 || true
+    gsettings set "$files_schema" command '/usr/local/bin/spectre-files' >/dev/null 2>&1 || true
+  fi
+  if [[ -z "$binding" || "$binding" == "''" ]]; then
+    gsettings set "$files_schema" binding '<Super>e' >/dev/null 2>&1 || true
+  fi
+}
+if schema_exists org.spectre.desktop && (( ! force )); then
+  if [[ "$(gsettings get org.spectre.desktop windows-shortcuts-initialized 2>/dev/null || echo false)" == 'true' ]]; then
+    repair_files_shortcut
+    exit 0
+  fi
+fi
+
+# Windows-familiar window behavior.
+# Super+M is intentionally an alias of Show Desktop. GNOME's show-desktop
+# action is reversible, so the same shortcut also restores the hidden windows.
+gset org.gnome.desktop.wm.keybindings close "['<Alt>F4']"
+gset org.gnome.desktop.wm.keybindings show-desktop "['<Super>d','<Super>m']"
+# Spectre Shell owns Super+Arrow directional tiling so orthogonal key presses
+# can compose into quarter-screen corners like Linux Mint Cinnamon. Clear the
+# conflicting Mutter/GNOME defaults here. Maximize/restore remain available via
+# Shift+Super+Up/Down. The Shell implementation works natively under Wayland.
+gset org.gnome.desktop.wm.keybindings maximize "['<Shift><Super>Up']"
+gset org.gnome.desktop.wm.keybindings unmaximize "['<Shift><Super>Down']"
+gset org.gnome.mutter.keybindings toggle-tiled-left "[]"
+gset org.gnome.mutter.keybindings toggle-tiled-right "[]"
+gset org.gnome.desktop.wm.keybindings toggle-fullscreen "['F11']"
+gset org.gnome.desktop.wm.keybindings activate-window-menu "['<Alt>space']"
+
+# Virtual desktops: Windows uses Ctrl+Super+Left/Right. Spectre keeps four
+# fixed workspaces, so moving a window between workspaces uses the same chord
+# plus Shift. Super+Shift+Left/Right is reserved for moving between monitors,
+# matching Windows on multi-display systems.
+gset org.gnome.desktop.wm.keybindings switch-to-workspace-left "['<Control><Super>Left']"
+gset org.gnome.desktop.wm.keybindings switch-to-workspace-right "['<Control><Super>Right']"
+gset org.gnome.desktop.wm.keybindings move-to-workspace-left "['<Control><Shift><Super>Left']"
+gset org.gnome.desktop.wm.keybindings move-to-workspace-right "['<Control><Shift><Super>Right']"
+gset org.gnome.desktop.wm.keybindings move-to-monitor-left "['<Shift><Super>Left']"
+gset org.gnome.desktop.wm.keybindings move-to-monitor-right "['<Shift><Super>Right']"
+
+# Super+S opens GNOME's overview, whose search field is immediately available;
+# Super+Tab reuses that overview as Spectre's Task View equivalent.
+gset org.gnome.desktop.wm.keybindings panel-main-menu "['<Alt>F1','<Super>s','<Super>Tab']"
+
+# Keep Alt+Tab as the familiar window switcher and Win+Space as input-language
+# switching. These keys are guarded because GNOME schema availability can vary.
+gset org.gnome.desktop.wm.keybindings switch-windows "['<Alt>Tab']"
+gset org.gnome.desktop.wm.keybindings switch-windows-backward "['<Shift><Alt>Tab']"
+gset org.gnome.desktop.wm.keybindings switch-input-source "['<Super>space']"
+gset org.gnome.desktop.wm.keybindings switch-input-source-backward "['<Shift><Super>space']"
+
+# Capture / notification / application surfaces.
+gset org.gnome.shell.keybindings show-screenshot-ui "['Print','<Super><Shift>s']"
+gset org.gnome.shell.keybindings screenshot "['<Shift>Print','<Super>Print']"
+gset org.gnome.shell.keybindings screenshot-window "['<Alt>Print']"
+# GNOME versions that expose the built-in recorder get the Windows Game Bar
+# style shortcut as an additional binding; older schemas simply ignore it.
+gset org.gnome.shell.keybindings toggle-screen-recording "['<Control><Shift><Alt>r','<Super><Alt>r']"
+gset org.gnome.shell.keybindings toggle-message-tray "['<Super>n']"
+gset org.gnome.shell.keybindings toggle-application-view "['<Super>a']"
+
+# Dash-to-Dock owns Super+1..9 when these keys exist.
+gset org.gnome.shell.extensions.dash-to-dock hot-keys true
+gset org.gnome.shell.extensions.dash-to-dock hotkeys-show-dock true
+
+# Custom application shortcuts. These use dedicated Spectre paths so resetting
+# the profile never clobbers unrelated custom shortcuts created by the user.
+media='org.gnome.settings-daemon.plugins.media-keys'
+paths=(
+ "$files_path"
+ '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/spectre-center/'
+ '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/spectre-run/'
+ '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/spectre-power/'
+ '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/spectre-monitor/'
+ '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/spectre-bluetooth/'
+ '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/spectre-display/'
+ '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/spectre-clipboard/'
+ '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/spectre-lock/'
+ '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/spectre-accessibility/'
+ '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/spectre-terminal/'
+ '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/spectre-system-info/'
+)
+gset "$media" custom-keybindings "['${paths[0]}','${paths[1]}','${paths[2]}','${paths[3]}','${paths[4]}','${paths[5]}','${paths[6]}','${paths[7]}','${paths[8]}','${paths[9]}','${paths[10]}','${paths[11]}']"
+add(){ local path="$1" name="$2" command="$3" binding="$4" s="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$path"; gsettings set "$s" name "$name" >/dev/null 2>&1 || true; gsettings set "$s" command "$command" >/dev/null 2>&1 || true; gsettings set "$s" binding "$binding" >/dev/null 2>&1 || true; }
+add "${paths[0]}" 'Spectre: Files' '/usr/local/bin/spectre-files' '<Super>e'
+add "${paths[1]}" 'Spectre: Center' 'spectre-center' '<Super>i'
+add "${paths[2]}" 'Spectre: Run' 'spectre-run' '<Super>r'
+add "${paths[3]}" 'Spectre: Power User' 'spectre-power-menu' '<Super>x'
+add "${paths[4]}" 'Spectre: System Monitor' 'gnome-system-monitor' '<Control><Shift>Escape'
+add "${paths[5]}" 'Spectre: Bluetooth' 'gnome-control-center bluetooth' '<Super>k'
+add "${paths[6]}" 'Spectre: Displays' 'gnome-control-center display' '<Super>p'
+add "${paths[7]}" 'Spectre: Clipboard' 'spectre-clipboard' '<Super>v'
+add "${paths[8]}" 'Spectre: Lock' 'spectre-lock' '<Super>l'
+add "${paths[9]}" 'Spectre: Accessibility' 'gnome-control-center accessibility' '<Super>u'
+add "${paths[10]}" 'Spectre: Terminal' 'gnome-terminal' '<Control><Alt>t'
+add "${paths[11]}" 'Spectre: System Information' 'spectre-center' '<Super>Pause'
+
+if schema_exists org.spectre.desktop; then gsettings set org.spectre.desktop windows-shortcuts-initialized true >/dev/null 2>&1 || true; fi

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.spectre.desktop" path="/org/spectre/desktop/">
+    <key name="show-hud" type="b">
+      <default>true</default>
+      <summary>Show Spectre desktop HUD</summary>
+      <description>Shows the native Spectre system and network cards on the desktop.</description>
+    </key>
+    <key name="show-system-card" type="b">
+      <default>true</default>
+      <summary>Show system card</summary>
+    </key>
+    <key name="show-network-card" type="b">
+      <default>true</default>
+      <summary>Show network card</summary>
+    </key>
+    <key name="hud-compact" type="b">
+      <default>false</default>
+      <summary>Compact HUD</summary>
+      <description>Uses a more compact desktop HUD layout.</description>
+    </key>
+    <key name="app-grid-initialized" type="b">
+      <default>false</default>
+      <summary>Spectre application grid initialized</summary>
+      <description>Records whether Spectre created a valid first-login GNOME application layout.</description>
+    </key>
+    <key name="wallpaper-mode" type="s">
+      <default>'spectre-auto'</default>
+      <summary>Spectre wallpaper behavior</summary>
+      <description>spectre-auto pairs the Spectre light and dark defaults. custom preserves the user's selected wallpaper across appearance changes.</description>
+    </key>
+    <key name="appearance-profile" type="s">
+      <default>'dark'</default>
+      <summary>Current Spectre appearance profile</summary>
+      <description>Tracks the last applied Spectre shell appearance profile without overriding user wallpaper choices.</description>
+    </key>
+    <key name="windows-shortcuts-initialized" type="b">
+      <default>false</default>
+      <summary>Windows-style shortcut defaults initialized</summary>
+      <description>Prevents Spectre updates from overwriting shortcuts after the first user configuration.</description>
+    </key>
+    <key name="tile-window-left" type="as">
+      <default>['&lt;Super&gt;Left']</default>
+      <summary>Tile active window left</summary>
+    </key>
+    <key name="tile-window-right" type="as">
+      <default>['&lt;Super&gt;Right']</default>
+      <summary>Tile active window right</summary>
+    </key>
+    <key name="tile-window-up" type="as">
+      <default>['&lt;Super&gt;Up']</default>
+      <summary>Tile active window upward</summary>
+    </key>
+    <key name="tile-window-down" type="as">
+      <default>['&lt;Super&gt;Down']</default>
+      <summary>Tile active window downward</summary>
+    </key>
+  </schema>
+</schemalist>

@@ -1,0 +1,552 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+INSTALLER_VERSION="1.0-production-installer"
+MIN_DISK_BYTES=$((32 * 1024 * 1024 * 1024))
+MIN_ALONGSIDE_BYTES=$((36 * 1024 * 1024 * 1024))
+EFI_GUID="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+TARGET="/mnt/spectre-target"
+SOURCE="/mnt/spectre-source"
+ESP_PROBE="/mnt/spectre-esp-probe"
+LOG="$(mktemp /tmp/spectre-installer.XXXXXX.log)"
+INSTALL_OK=0
+DISK="" ROOT_PART="" EFI_PART="" LIVE_DISK="" WINDOWS_EFI_HASH=""
+CALLER_UID="${PKEXEC_UID:-${SUDO_UID:-1000}}"
+CALLER_HOME="$(getent passwd "$CALLER_UID" 2>/dev/null | cut -d: -f6 || true)"
+[[ -n "$CALLER_HOME" ]] || CALLER_HOME="/home/spectre"
+umask 077
+
+# Keep the UI channel clean: detailed command output goes to a private log.
+exec 3>&1
+exec >>"$LOG" 2>&1
+
+CURRENT_STAGE="startup"
+ui_emit(){
+  # The frontend is only a progress consumer. If it crashes or its window is
+  # forcibly destroyed, a broken progress pipe must never terminate a
+  # privileged disk operation halfway through. Ignore SIGPIPE only in this
+  # tiny subshell so child tools retain normal signal behaviour.
+  ( trap '' PIPE; printf '%s\n' "$1" >&3 2>/dev/null ) || true
+}
+progress(){
+  CURRENT_STAGE="$2"
+  printf '[%s] [STEP] %s (%s%%)\n' "$(date -Is)" "$2" "$1"
+  ui_emit "$(printf 'PROGRESS|%s|%s' "$1" "$2")"
+}
+wire_error(){ ui_emit "ERROR|$*"; }
+log_note(){ printf '[%s] %s\n' "$(date -Is)" "$*"; ui_emit "$(printf 'LOG|%s' "$*")"; }
+on_unexpected_error(){
+  local rc="$1" line="$2" cmd="$3"
+  set +e
+  printf '[%s] [UNEXPECTED-ERROR] stage=%s exit=%s line=%s command=%q\n' "$(date -Is)" "$CURRENT_STAGE" "$rc" "$line" "$cmd"
+  copy_failure_log
+  wire_error "Installation failed during: $CURRENT_STAGE (exit $rc)."
+  exit "$rc"
+}
+
+copy_failure_log(){
+  local dest="$CALLER_HOME/Downloads/spectre-installer-failure.log"
+  if [[ -d "$CALLER_HOME/Downloads" ]]; then
+    cp -f "$LOG" "$dest" 2>/dev/null || true
+    chown "$CALLER_UID:$CALLER_UID" "$dest" 2>/dev/null || true
+    chmod 0600 "$dest" 2>/dev/null || true
+  fi
+}
+
+unmount_tree(){
+  set +e
+  sync
+  mountpoint -q "$ESP_PROBE" 2>/dev/null && umount "$ESP_PROBE" 2>/dev/null
+  for p in "$TARGET/run" "$TARGET/proc"; do mountpoint -q "$p" 2>/dev/null && umount "$p" 2>/dev/null; done
+  for p in "$TARGET/sys" "$TARGET/dev"; do mountpoint -q "$p" 2>/dev/null && umount -R "$p" 2>/dev/null; done
+  for p in "$TARGET/boot/efi" "$TARGET" "$SOURCE"; do mountpoint -q "$p" 2>/dev/null && umount "$p" 2>/dev/null; done
+  set -e
+}
+cleanup(){ unmount_tree || true; }
+on_signal(){
+  local name="$1" rc="$2"
+  set +e
+  printf '[%s] [SIGNAL] stage=%s signal=%s exit=%s\n' "$(date -Is)" "$CURRENT_STAGE" "$name" "$rc"
+  copy_failure_log
+  wire_error "Installation interrupted by $name during: $CURRENT_STAGE."
+  cleanup
+  trap - EXIT INT TERM
+  exit "$rc"
+}
+trap cleanup EXIT
+trap 'on_signal INT 130' INT
+trap 'on_signal TERM 143' TERM
+
+fatal(){
+  local msg="$*"
+  printf '[%s] [ERROR] stage=%s message=%s\n' "$(date -Is)" "$CURRENT_STAGE" "$msg"
+  copy_failure_log
+  wire_error "$msg"
+  exit 1
+}
+trap 'on_unexpected_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
+
+part_path(){ local disk="$1" n="$2"; [[ "$disk" =~ [0-9]$ ]] && printf '%sp%s' "$disk" "$n" || printf '%s%s' "$disk" "$n"; }
+parent_disk(){
+  local node="$1" current parent type
+  [[ "$node" == /dev/* ]] || return 1
+  current="$(readlink -f "$node" 2>/dev/null || printf '%s' "$node")"
+  for _ in 1 2 3 4 5 6; do
+    type="$(lsblk -ndo TYPE "$current" 2>/dev/null | head -1 || true)"
+    [[ "$type" == disk ]] && { printf '%s\n' "$current"; return 0; }
+    parent="$(lsblk -ndo PKNAME "$current" 2>/dev/null | head -1 || true)"
+    [[ -n "$parent" ]] || break
+    current="/dev/$parent"
+  done
+  return 1
+}
+wait_block(){ local p="$1"; for _ in $(seq 1 40); do [[ -b "$p" ]] && return 0; udevadm settle >/dev/null 2>&1 || true; sleep .2; done; return 1; }
+
+normalize_target_hierarchy_ownership(){
+  local path
+  chown root:root "$TARGET"
+  chmod 0755 "$TARGET"
+  for path in bin boot dev etc home lib lib64 media mnt opt proc root run sbin srv sys tmp usr var; do
+    if [[ -e "$TARGET/$path" || -L "$TARGET/$path" ]]; then
+      chown -h root:root "$TARGET/$path"
+    fi
+  done
+}
+
+verify_target_root_ownership(){
+  local uid gid mode
+  uid="$(stat -c %u "$TARGET")"; gid="$(stat -c %g "$TARGET")"; mode="$(stat -c %a "$TARGET")"
+  [[ "$uid" == 0 && "$gid" == 0 && "$mode" == 755 ]] || fatal "Installed filesystem root ownership/mode is ${uid}:${gid} ${mode}; expected 0:0 755."
+}
+
+for cmd in lsblk findmnt parted partprobe udevadm wipefs mkfs.vfat mkfs.ext4 mount umount rsync blkid chroot grub-install update-grub python3 swapon swapoff sfdisk sha256sum fallocate mkswap locale-gen os-prober stat chown chmod; do
+  command -v "$cmd" >/dev/null 2>&1 || fatal "Required installer command is missing: $cmd"
+done
+[[ $EUID -eq 0 ]] || fatal "The privileged installer backend must run as root."
+[[ "${1:-}" == "--install-json" ]] || fatal "Unsupported backend invocation."
+
+SQUASH=""
+for candidate in /run/live/medium/live/filesystem.squashfs /lib/live/mount/medium/live/filesystem.squashfs; do
+  [[ -f "$candidate" ]] && { SQUASH="$candidate"; break; }
+done
+[[ -n "$SQUASH" ]] || fatal "The Spectre live filesystem could not be located."
+LIVE_SOURCE="$(findmnt -no SOURCE /run/live/medium 2>/dev/null || findmnt -no SOURCE /lib/live/mount/medium 2>/dev/null || true)"
+if [[ "$LIVE_SOURCE" == /dev/* ]]; then LIVE_DISK="$(parent_disk "$LIVE_SOURCE" 2>/dev/null || true)"; fi
+
+# Read the installation plan over stdin so passwords are never placed in a
+# command line or temporary world-readable plan file.
+PLAN_JSON="$(cat)"
+[[ -n "$PLAN_JSON" ]] || fatal "The installation plan is empty."
+while IFS= read -r -d '' key && IFS= read -r -d '' value; do
+  printf -v "$key" '%s' "$value"
+done < <(python3 - "$PLAN_JSON" <<'PY'
+import json,sys
+p=json.loads(sys.argv[1])
+fields={
+'MODE':p.get('mode',''),'DISK':p.get('disk',''),'EXPECTED_SIZE':str(p.get('expected_size','')),
+'EXPECTED_SERIAL':p.get('expected_serial',''),'FULLNAME':p.get('full_name',''),'USERNAME':p.get('username',''),
+'HOSTNAME':p.get('hostname',''),'PASSWORD':p.get('password',''),'TIMEZONE':p.get('timezone',''),
+'LOCALE':p.get('locale',''),'KEYBOARD':p.get('keyboard',''),'SWAP':'1' if p.get('swap') else '0',
+'CONFIRMATION':p.get('confirmation',''),'ACKNOWLEDGED':'1' if p.get('acknowledged') else '0'}
+for k,v in fields.items():
+    sys.stdout.write(k+'\0'+str(v)+'\0')
+PY
+)
+unset PLAN_JSON
+
+[[ "$MODE" == erase || "$MODE" == alongside ]] || fatal "Unsupported installation mode: $MODE"
+[[ "$DISK" == /dev/* && -b "$DISK" ]] || fatal "Invalid target disk: $DISK"
+DISK="$(readlink -f "$DISK")"
+[[ -z "$LIVE_DISK" || "$DISK" != "$(readlink -f "$LIVE_DISK")" ]] || fatal "Safety check blocked the Spectre live installer media."
+[[ "$EXPECTED_SIZE" =~ ^[0-9]+$ ]] || fatal "Invalid expected disk size."
+NOW_SIZE="$(lsblk -bdno SIZE "$DISK" | head -1)"
+[[ "$NOW_SIZE" == "$EXPECTED_SIZE" ]] || fatal "The selected disk changed size after it was reviewed."
+(( NOW_SIZE >= MIN_DISK_BYTES )) || fatal "The selected disk is smaller than 32 GiB."
+NOW_SERIAL="$(lsblk -dno SERIAL "$DISK" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | head -1)"
+if [[ -n "$EXPECTED_SERIAL" && -n "$NOW_SERIAL" && "$EXPECTED_SERIAL" != "$NOW_SERIAL" ]]; then fatal "The selected disk serial changed after it was reviewed."; fi
+[[ "$FULLNAME" =~ [^[:space:]] ]] || fatal "Full name cannot be empty."
+[[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]{0,30}$ && "$USERNAME" != root ]] || fatal "Invalid username."
+[[ "$HOSTNAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || fatal "Invalid computer name."
+[[ ${#PASSWORD} -ge 8 ]] || fatal "Password must contain at least 8 characters."
+[[ "$TIMEZONE" != *'..'* && -f "/usr/share/zoneinfo/$TIMEZONE" ]] || fatal "Unknown time zone: $TIMEZONE"
+[[ "$LOCALE" =~ ^[A-Za-z_]+([.-][A-Za-z0-9-]+)*$ ]] || fatal "Invalid locale: $LOCALE"
+[[ "$KEYBOARD" =~ ^[a-z0-9_-]{2,16}$ ]] || fatal "Invalid keyboard layout: $KEYBOARD"
+[[ "$ACKNOWLEDGED" == "1" ]] || fatal "The installation safety acknowledgement was not accepted."
+if [[ "$MODE" == erase ]]; then
+  [[ "$CONFIRMATION" == "ERASE" ]] || fatal "Erase safety word was not confirmed."
+else
+  [[ "$CONFIRMATION" == "INSTALL" ]] || fatal "Alongside-install safety word was not confirmed."
+fi
+
+# Save the pre-install partition table for diagnostics/recovery. It is most
+# useful for alongside installs, but harmless and valuable for erase QA too.
+mkdir -p "$CALLER_HOME/Downloads" 2>/dev/null || true
+BACKUP="$CALLER_HOME/Downloads/spectre-preinstall-partition-table-$(basename "$DISK").txt"
+sfdisk --dump "$DISK" > "$BACKUP" 2>/dev/null || true
+chown "$CALLER_UID:$CALLER_UID" "$BACKUP" 2>/dev/null || true
+chmod 0600 "$BACKUP" 2>/dev/null || true
+
+progress 2 "Preparing the selected disk…"
+# Disable swap and unmount mounted children before any partition operation.
+while read -r dev; do
+  [[ -n "$dev" ]] || continue
+  swapon --noheadings --show=NAME 2>/dev/null | grep -Fxq "$dev" && swapoff "$dev" || true
+done < <(lsblk -lnpo PATH "$DISK")
+mapfile -t target_mounts < <(lsblk -lnpo MOUNTPOINT "$DISK" | awk 'NF' | sort -r)
+for p in "${target_mounts[@]}"; do umount "$p" || fatal "Could not unmount $p before installation."; done
+
+if [[ "$MODE" == erase ]]; then
+  progress 8 "Creating the Spectre partition layout…"
+  # SPECTRE_DISK_WIPE_V273: explicit ERASE + disk-identity gates are above.
+  # Existing GPTs require --force; fail early if the kernel still holds a
+  # previous partition mapping. Never use this operation in alongside mode.
+  wipefs --all --force "$DISK" || fatal "Could not clear the selected disk."
+  partprobe "$DISK" || fatal "The target's old partition mapping is busy. Start a fresh Live session before retrying."
+  udevadm settle || fatal "Could not settle the target after disk reset."
+  parted -s "$DISK" mklabel gpt || fatal "Could not create GPT partition table."
+  parted -s "$DISK" mkpart biosgrub 1MiB 3MiB || fatal "Could not create BIOS boot partition."
+  parted -s "$DISK" set 1 bios_grub on || fatal "Could not mark BIOS boot partition."
+  parted -s "$DISK" mkpart SPECTRE_EFI fat32 3MiB 1027MiB || fatal "Could not create EFI partition."
+  parted -s "$DISK" set 2 esp on || fatal "Could not mark EFI partition."
+  parted -s "$DISK" mkpart SPECTRE_ROOT ext4 1027MiB 100% || fatal "Could not create root partition."
+  partprobe "$DISK" || true; udevadm settle || true
+  EFI_PART="$(part_path "$DISK" 2)"; ROOT_PART="$(part_path "$DISK" 3)"
+  wait_block "$EFI_PART" && wait_block "$ROOT_PART" || fatal "New Spectre partitions did not appear."
+  progress 14 "Formatting Spectre filesystems…"
+  mkfs.vfat -F32 -n SPECTRE_EFI "$EFI_PART" || fatal "Could not format the EFI partition."
+  mkfs.ext4 -F -m 1 -L SPECTRE_ROOT "$ROOT_PART" || fatal "Could not format the root partition."
+else
+  progress 5 "Verifying Windows and safe unallocated space…"
+  [[ -d /sys/firmware/efi ]] || fatal "Alongside installation requires the Spectre USB to be booted in UEFI mode."
+  PTTYPE="$(lsblk -dno PTTYPE "$DISK" | tr '[:upper:]' '[:lower:]' | head -1)"
+  [[ "$PTTYPE" == gpt ]] || fatal "Alongside installation currently supports UEFI/GPT Windows disks only."
+  EFI_PART="$(lsblk -rno PATH,PARTTYPE,FSTYPE "$DISK" | awk -v g="$EFI_GUID" 'tolower($2)==g {print $1; exit}')"
+  [[ -b "$EFI_PART" ]] || fatal "No EFI System Partition was found on the Windows disk."
+  mkdir -p "$ESP_PROBE"
+  mount -o ro "$EFI_PART" "$ESP_PROBE" || fatal "Could not safely inspect the EFI System Partition."
+  WIN_LOADER="$ESP_PROBE/EFI/Microsoft/Boot/bootmgfw.efi"
+  [[ -s "$WIN_LOADER" ]] || fatal "Windows Boot Manager was not found. Alongside mode stopped before changing partitions."
+  WINDOWS_EFI_HASH="$(sha256sum "$WIN_LOADER" | awk '{print $1}')"
+  umount "$ESP_PROBE" || fatal "Could not release the EFI System Partition probe mount."
+
+  GAP="$(python3 - "$DISK" "$MIN_ALONGSIDE_BYTES" <<'PY'
+import json,subprocess,sys,math
+path=sys.argv[1]; minimum=int(sys.argv[2])
+data=json.loads(subprocess.check_output(['lsblk','-J','-b','-o','PATH,TYPE,SIZE,START,LOG-SEC',path],text=True))['blockdevices'][0]
+size=int(data['size']); sec=int(data.get('log-sec') or 512)
+ints=[]
+for p in data.get('children') or []:
+    if p.get('type')!='part': continue
+    st=int(p.get('start') or 0)*sec; sz=int(p.get('size') or 0)
+    if sz: ints.append((st,st+sz))
+ints.sort(); cursor=4*1024**2; gaps=[]
+for st,en in ints:
+    if st>cursor: gaps.append((cursor,st))
+    cursor=max(cursor,en)
+end=size-4*1024**2
+if end>cursor: gaps.append((cursor,end))
+valid=[g for g in gaps if g[1]-g[0]>=minimum]
+if not valid: sys.exit(2)
+st,en=max(valid,key=lambda g:g[1]-g[0])
+# Keep 4 MiB margins on both sides, then align to MiB boundaries.
+st=math.ceil((st+4*1024**2)/(1024**2)); en=math.floor((en-4*1024**2)/(1024**2))
+if (en-st)*1024**2<minimum: sys.exit(3)
+print(f'{st}|{en}')
+PY
+)" || fatal "At least 36 GiB of contiguous unallocated space is required for safe alongside installation. Shrink Windows from Windows Disk Management first."
+  GAP_START="${GAP%%|*}"; GAP_END="${GAP##*|}"
+  [[ "$GAP_START" =~ ^[0-9]+$ && "$GAP_END" =~ ^[0-9]+$ ]] || fatal "Could not calculate a safe free-space range."
+  [[ -z "$(lsblk -rno PARTLABEL "$DISK" | grep -Fx 'SPECTRE_ROOT' || true)" ]] || fatal "A SPECTRE_ROOT partition already exists; manual review is required."
+  progress 10 "Creating Spectre in the existing unallocated space…"
+  parted -s "$DISK" mkpart SPECTRE_ROOT ext4 "${GAP_START}MiB" "${GAP_END}MiB" || fatal "Could not create the Spectre partition in unallocated space."
+  partprobe "$DISK" || true; udevadm settle || true
+  ROOT_PART="$(lsblk -rno PATH,PARTLABEL "$DISK" | awk '$2=="SPECTRE_ROOT" {print $1; exit}')"
+  [[ -b "$ROOT_PART" ]] || fatal "The new Spectre root partition did not appear."
+  mkfs.ext4 -F -m 1 -L SPECTRE_ROOT "$ROOT_PART" || fatal "Could not format the new Spectre root partition."
+fi
+
+progress 20 "Mounting the new Spectre system…"
+mkdir -p "$TARGET" "$SOURCE"
+mount "$ROOT_PART" "$TARGET" || fatal "Could not mount the Spectre root partition."
+mkdir -p "$TARGET/boot/efi"
+mount "$EFI_PART" "$TARGET/boot/efi" || fatal "Could not mount the EFI partition."
+mount -t squashfs -o loop,ro "$SQUASH" "$SOURCE" || fatal "Could not mount the Spectre live filesystem."
+
+progress 27 "Copying Spectre OS to the target disk…"
+rsync -aHAX --numeric-ids --exclude='/boot/efi/***' --exclude='/run/***' --exclude='/tmp/***' --exclude='/var/tmp/***' --exclude='/mnt/***' --exclude='/media/***' "$SOURCE/" "$TARGET/" || fatal "Copying Spectre OS failed."
+# Never trust live-image root ownership at installation time.  Preserve
+# legitimate ownership below the hierarchy while forcing system-owned top-level
+# nodes back to root before account migration or chroot operations.
+normalize_target_hierarchy_ownership
+verify_target_root_ownership
+log_note "System copy completed; root ownership normalized; validating Spectre identity and kernel."
+[[ -f "$TARGET/etc/os-release" ]] && grep -q '^ID=spectre$' "$TARGET/etc/os-release" || fatal "The copied target does not identify as Spectre OS."
+kernel="$(find "$TARGET/boot" -maxdepth 1 -type f -name 'vmlinuz-*' | sort | tail -1)"; [[ -n "$kernel" ]] || fatal "Installed kernel is missing."
+krel="${kernel##*/vmlinuz-}"; [[ -d "$TARGET/lib/modules/$krel" || -d "$TARGET/usr/lib/modules/$krel" ]] || fatal "Kernel modules are missing for $krel."
+
+mkdir -p -m 0755 "$TARGET/run" "$TARGET/run/lock" "$TARGET/proc" "$TARGET/sys" "$TARGET/dev"
+mkdir -p -m 1777 "$TARGET/tmp" "$TARGET/var/tmp"
+progress 50 "Preparing the installed system…"
+
+ROOT_UUID="$(blkid -s UUID -o value "$ROOT_PART")"; EFI_UUID="$(blkid -s UUID -o value "$EFI_PART")"
+[[ -n "$ROOT_UUID" && -n "$EFI_UUID" ]] || fatal "Could not read filesystem UUIDs."
+cat > "$TARGET/etc/fstab" <<EOF
+# Spectre OS filesystem table — generated by $INSTALLER_VERSION
+UUID=$ROOT_UUID / ext4 defaults,noatime 0 1
+UUID=$EFI_UUID /boot/efi vfat umask=0077 0 1
+EOF
+if [[ "$SWAP" == 1 ]]; then
+  fallocate -l 2G "$TARGET/swapfile" || fatal "Could not create swap file."
+  chmod 0600 "$TARGET/swapfile"; mkswap "$TARGET/swapfile" >/dev/null || fatal "Could not initialize swap file."
+  printf '/swapfile none swap sw 0 0\n' >> "$TARGET/etc/fstab"
+fi
+printf '%s\n' "$HOSTNAME" > "$TARGET/etc/hostname"
+cat > "$TARGET/etc/hosts" <<EOF
+127.0.0.1 localhost
+127.0.1.1 $HOSTNAME
+::1 localhost ip6-localhost ip6-loopback
+EOF
+ln -sfn "/usr/share/zoneinfo/$TIMEZONE" "$TARGET/etc/localtime"; printf '%s\n' "$TIMEZONE" > "$TARGET/etc/timezone"
+cat > "$TARGET/etc/default/keyboard" <<EOF
+XKBMODEL="pc105"
+XKBLAYOUT="$KEYBOARD"
+XKBVARIANT=""
+XKBOPTIONS=""
+BACKSPACE="guess"
+EOF
+if [[ -f "$TARGET/etc/locale.gen" ]]; then
+  sed -i -E "s/^#[[:space:]]*(${LOCALE//./\\.}[[:space:]]+UTF-8)/\\1/" "$TARGET/etc/locale.gen" || true
+fi
+printf 'LANG=%s\n' "$LOCALE" > "$TARGET/etc/default/locale"
+chroot "$TARGET" locale-gen >/dev/null 2>&1 || true
+
+# Account migration must happen BEFORE binding the live session's /proc into
+# the target. Shadow's usermod refuses to rename UID 1000 when it can see the
+# running live GNOME session using that UID. With the copied target /proc still
+# empty, the account database can be migrated offline without mistaking the
+# live-session processes for installed-system processes.
+progress 60 "Creating your account…"
+log_note "Migrating copied live account to installed account while target /proc is isolated."
+if [[ "$USERNAME" != spectre ]]; then
+  chroot "$TARGET" getent passwd "$USERNAME" >/dev/null 2>&1 && fatal "The requested username is reserved by the system."
+  chroot "$TARGET" usermod -l "$USERNAME" spectre || fatal "Could not rename the copied live account to $USERNAME."
+  chroot "$TARGET" getent group spectre >/dev/null 2>&1 && chroot "$TARGET" groupmod -n "$USERNAME" spectre || true
+  chroot "$TARGET" usermod -d "/home/$USERNAME" -m "$USERNAME" || fatal "Could not migrate the user home directory."
+fi
+chroot "$TARGET" usermod -c "$FULLNAME" -s /bin/bash "$USERNAME" || fatal "Could not configure the user account."
+for group in sudo audio video plugdev netdev lpadmin; do chroot "$TARGET" getent group "$group" >/dev/null 2>&1 && chroot "$TARGET" usermod -aG "$group" "$USERNAME" || true; done
+printf '%s:%s\n' "$USERNAME" "$PASSWORD" | chroot "$TARGET" chpasswd || fatal "Could not set the user password."
+unset PASSWORD
+chroot "$TARGET" usermod -U "$USERNAME" >/dev/null 2>&1 || true
+chroot "$TARGET" chage -E -1 -M 99999 "$USERNAME" || fatal "Could not configure password expiry."
+chroot "$TARGET" passwd -l root >/dev/null 2>&1 || true
+USER_HASH="$(chroot "$TARGET" getent shadow "$USERNAME" | cut -d: -f2)"; [[ -n "$USER_HASH" && "$USER_HASH" != '!'* && "$USER_HASH" != '*'* ]] || fatal "The installed account password is unusable."
+UID_NUM="$(chroot "$TARGET" id -u "$USERNAME")"; GID_NUM="$(chroot "$TARGET" id -g "$USERNAME")"; chown -R "$UID_NUM:$GID_NUM" "$TARGET/home/$USERNAME"
+log_note "Installed account $USERNAME created and password verified."
+if [[ "$USERNAME" != spectre ]]; then
+  # Rewriting stale /home/spectre references is optional post-processing.
+  # With `set -Eeuo pipefail`, a plain `grep | while` pipeline exits 1 when
+  # there are no stale references, which previously aborted a perfectly valid
+  # installation immediately after the account had already been created.
+  # Process substitution plus `|| true` makes the zero-match case a success
+  # while still rewriting every text file that actually contains the old path.
+  while IFS= read -r -d '' f; do
+    sed -i "s#/home/spectre#/home/$USERNAME#g" "$f" || true
+  done < <(grep -RIlZ -- '/home/spectre' "$TARGET/home/$USERNAME" 2>/dev/null || true)
+  [[ -f "$TARGET/var/lib/AccountsService/users/spectre" ]] && mv "$TARGET/var/lib/AccountsService/users/spectre" "$TARGET/var/lib/AccountsService/users/$USERNAME" || true
+  [[ -f "$TARGET/var/lib/AccountsService/icons/spectre" ]] && mv "$TARGET/var/lib/AccountsService/icons/spectre" "$TARGET/var/lib/AccountsService/icons/$USERNAME" || true
+fi
+
+# Only after account migration do we expose the live kernel interfaces needed
+# by apt, systemd tools, initramfs generation and GRUB inside the target.
+progress 64 "Attaching installer runtime services…"
+mount --rbind /dev "$TARGET/dev" || fatal "Could not attach /dev to target."; mount --make-rslave "$TARGET/dev"
+mount -t proc proc "$TARGET/proc" || fatal "Could not attach /proc to target."
+mount --rbind /sys "$TARGET/sys" || fatal "Could not attach /sys to target."; mount --make-rslave "$TARGET/sys"
+mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs "$TARGET/run" || fatal "Could not create isolated target /run."
+mkdir -p -m 0755 "$TARGET/run/lock"
+
+progress 68 "Removing live-session components…"
+rm -f "$TARGET/etc/polkit-1/rules.d/49-spectre-installer.rules" "$TARGET/etc/sudoers.d/90-spectre-live" "$TARGET/usr/share/applications/com.spectre.Installer.desktop"
+rm -f "$TARGET/usr/local/sbin/spectre-installer" "$TARGET/usr/local/sbin/spectre-installer-backend" "$TARGET/usr/local/bin/spectre-installer-launcher"
+rm -f "$TARGET/etc/xdg/autostart/spectre-live-installer.desktop" "$TARGET/usr/local/bin/spectre-live-installer-setup" "$TARGET/usr/share/pixmaps/spectre-installer.png"
+for icon_size in 48 64 128 256 512; do rm -f "$TARGET/usr/share/icons/hicolor/${icon_size}x${icon_size}/apps/spectre-installer.png"; done
+rm -f "$TARGET/home/$USERNAME/Desktop/Install Spectre OS.desktop" 2>/dev/null || true
+rm -rf "$TARGET/etc/live/config.conf.d" "$TARGET/etc/live" "$TARGET/var/lib/live" 2>/dev/null || true
+rm -f "$TARGET/etc/initramfs-tools/hooks/zz-spectre-live" "$TARGET/etc/initramfs-tools/conf.d/99-spectre-iso" "$TARGET/etc/initramfs-tools/conf.d/00-spectre-live-init"
+cat > "$TARGET/etc/initramfs-tools/conf.d/99-spectre-installed" <<'EOF'
+MODULES=most
+BUSYBOX=y
+COMPRESS=gzip
+COMPRESSLEVEL=6
+EOF
+# SPECTRE_REAL_HW_STORAGE_INITRAMFS_V1
+# MODULES=most remains the broad hardware policy, but explicitly pin the
+# storage-controller modules that can be required before the root filesystem
+# is visible. This makes first boot deterministic on NVMe, Intel VMD/RST,
+# SATA/AHCI and the disposable VirtIO test disk when those drivers are =m.
+INSTALLED_MODULES="$TARGET/etc/initramfs-tools/modules"
+printf '# Spectre installed system: deterministic early root-storage modules.\n' > "$INSTALLED_MODULES"
+for kdir in "$TARGET"/lib/modules/*; do
+  [[ -d "$kdir" ]] || continue
+  krel="${kdir##*/}"
+  for mod in vmd nvme nvme_core ahci libahci libata ata_piix virtio_blk virtio_pci virtio_scsi; do
+    if chroot "$TARGET" modinfo -k "$krel" "$mod" >/dev/null 2>&1; then
+      grep -qxF "$mod" "$INSTALLED_MODULES" || printf '%s\n' "$mod" >> "$INSTALLED_MODULES"
+    fi
+  done
+done
+if [[ -f "$TARGET/etc/gdm3/daemon.conf" ]]; then cat > "$TARGET/etc/gdm3/daemon.conf" <<'EOF'
+[daemon]
+AutomaticLoginEnable=false
+WaylandEnable=true
+EOF
+fi
+# SPECTRE_INSTALLER_EARLY_PREFLIGHT_V274
+# Verify the target inspector before dpkg purge can trigger initramfs generation.
+# SPECTRE_INSTALLER_PERMANENT_V273
+# `command` is a shell builtin. Resolve it INSIDE the installed target.
+# This gate runs before the expensive update-initramfs pass.
+LSINITRAMFS="$(chroot "$TARGET" /bin/sh -c 'command -v lsinitramfs' 2>>"$LOG" || true)"
+case "$LSINITRAMFS" in
+  /*) [[ -f "$TARGET$LSINITRAMFS" && -x "$TARGET$LSINITRAMFS" ]] ||
+        fatal "Installed lsinitramfs exists in PATH but is not executable: $LSINITRAMFS" ;;
+  *)  fatal "Installed lsinitramfs is missing. Check initramfs-tools-core in the target root." ;;
+esac
+log_note "Installed initramfs inspector preflight passed: $LSINITRAMFS"
+chroot "$TARGET" /bin/bash -euc '
+export DEBIAN_FRONTEND=noninteractive
+pkgs=""
+for p in live-boot live-boot-initramfs-tools live-config live-config-systemd; do dpkg-query -W -f="\${Status}" "$p" 2>/dev/null | grep -q "install ok installed" && pkgs="$pkgs $p" || true; done
+[ -z "$pkgs" ] || apt-get purge -y $pkgs
+apt-get clean
+' || fatal "Could not remove live-only packages."
+chroot "$TARGET" systemctl mask networking.service >/dev/null 2>&1 || fatal "Could not mask legacy networking."
+chroot "$TARGET" systemctl enable NetworkManager.service >/dev/null 2>&1 || fatal "Could not enable NetworkManager."
+chroot "$TARGET" systemctl enable gdm3.service >/dev/null 2>&1 || chroot "$TARGET" systemctl enable gdm.service >/dev/null 2>&1 || fatal "Could not enable GDM."
+chroot "$TARGET" systemctl set-default graphical.target >/dev/null 2>&1 || fatal "Could not set graphical boot target."
+rm -f "$TARGET/etc/machine-id" "$TARGET/var/lib/dbus/machine-id"; chroot "$TARGET" systemd-machine-id-setup >/dev/null 2>&1 || fatal "Could not create machine ID."
+mkdir -p "$TARGET/var/lib/dbus"; ln -sfn /etc/machine-id "$TARGET/var/lib/dbus/machine-id"
+
+progress 76 "Building the installed-system initramfs…"
+chroot "$TARGET" update-initramfs -u -k all || fatal "Installed initramfs generation failed."
+
+# SPECTRE_INSTALLED_STORAGE_MODULE_VERIFY_V273
+verify_installed_initramfs_module(){
+  local krel="$1" mod="$2" symbol="$3" cfg="$TARGET/boot/config-$krel" path base escaped_base
+  [[ -f "$cfg" ]] || fatal "Installed kernel config is missing: /boot/config-$krel"
+  if grep -q "^${symbol}=y$" "$cfg"; then
+    return 0
+  elif grep -q "^${symbol}=m$" "$cfg"; then
+    path="$(chroot "$TARGET" modinfo -k "$krel" -n "$mod" 2>>"$LOG" || true)"
+    [[ -n "$path" ]] || fatal "$symbol=m but installed module $mod is unavailable for $krel."
+    base="$(basename "$path")"
+    escaped_base="${base//./\\.}"
+    grep -Eq "/${escaped_base}(\.(xz|zst|gz))?$" <<<"$INITRAMFS_LIST" ||
+      fatal "Installed initramfs for $krel is missing required early-storage module $mod ($symbol=m)."
+  fi
+}
+for kdir in "$TARGET"/lib/modules/*; do
+  [[ -d "$kdir" ]] || continue
+  krel="${kdir##*/}"
+  [[ -s "$TARGET/boot/initrd.img-$krel" ]] || fatal "Installed initramfs is missing for $krel."
+  # Inspect the ACTUAL generated installed initramfs, once per kernel.
+  INITRAMFS_LIST="$(chroot "$TARGET" "$LSINITRAMFS" "/boot/initrd.img-$krel" 2>>"$LOG")" ||
+    fatal "lsinitramfs could not read installed /boot/initrd.img-$krel."
+  [[ -n "$INITRAMFS_LIST" ]] || fatal "Installed initramfs manifest is empty for $krel."
+  verify_installed_initramfs_module "$krel" vmd  CONFIG_VMD
+  verify_installed_initramfs_module "$krel" nvme CONFIG_BLK_DEV_NVME
+  verify_installed_initramfs_module "$krel" ahci CONFIG_SATA_AHCI
+done
+log_note "Installed-system initramfs generated and storage-module verified successfully."
+
+progress 84 "Installing the Spectre bootloader…"
+mkdir -p "$TARGET/etc/default/grub.d"; rm -f "$TARGET/etc/default/grub.d/"*live* "$TARGET/etc/default/grub.d/"*iso* 2>/dev/null || true
+cat > "$TARGET/etc/default/grub.d/99-spectre-installed.cfg" <<EOF
+GRUB_TIMEOUT_STYLE=hidden
+GRUB_TIMEOUT=1
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=3 systemd.show_status=false rd.systemd.show_status=false udev.log_level=3 vt.global_cursor_default=0 plymouth.ignore-serial-consoles"
+GRUB_CMDLINE_LINUX=""
+GRUB_DISABLE_OS_PROBER=$( [[ "$MODE" == alongside ]] && printf false || printf true )
+EOF
+BOOT_MODE="bios"; [[ -d /sys/firmware/efi ]] && BOOT_MODE="uefi"
+if [[ "$MODE" == erase ]]; then
+  chroot "$TARGET" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Spectre --removable --no-nvram --recheck || fatal "Portable UEFI GRUB installation failed."
+  [[ -f "$TARGET/boot/efi/EFI/BOOT/BOOTX64.EFI" ]] || fatal "Portable UEFI fallback loader is missing."
+  if [[ "$BOOT_MODE" == uefi && -d /sys/firmware/efi/efivars ]]; then chroot "$TARGET" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Spectre --recheck || fatal "UEFI firmware boot entry installation failed."; fi
+  if [[ "$BOOT_MODE" == bios ]]; then chroot "$TARGET" grub-install --target=i386-pc --recheck "$DISK" || fatal "BIOS GRUB installation failed."; else chroot "$TARGET" grub-install --target=i386-pc --recheck "$DISK" || echo '[WARN] BIOS compatibility GRUB failed; UEFI remains valid.'; fi
+else
+  # Dual boot must not overwrite Windows' portable EFI fallback. Install only
+  # into EFI/Spectre and create the normal NVRAM entry when efivars are usable.
+  chroot "$TARGET" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Spectre --no-nvram --recheck || fatal "Spectre UEFI bootloader installation failed."
+  [[ -f "$TARGET/boot/efi/EFI/Spectre/grubx64.efi" ]] || fatal "EFI/Spectre bootloader is missing."
+  if [[ -d /sys/firmware/efi/efivars ]]; then chroot "$TARGET" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Spectre --recheck || fatal "Could not create the Spectre UEFI boot entry."; fi
+  chroot "$TARGET" os-prober > "$TARGET/tmp/spectre-os-prober.txt" 2>&1 || true
+fi
+chroot "$TARGET" update-grub || fatal "GRUB configuration generation failed."
+log_note "Spectre bootloader and GRUB configuration installed."
+[[ -s "$TARGET/boot/grub/grub.cfg" ]] || fatal "GRUB configuration is missing."
+if [[ "$MODE" == alongside ]]; then
+  mountpoint -q "$TARGET/boot/efi" || fatal "EFI partition is not mounted for final dual-boot verification."
+  [[ -s "$TARGET/boot/efi/EFI/Microsoft/Boot/bootmgfw.efi" ]] || fatal "Windows Boot Manager disappeared during installation."
+  AFTER_WIN_HASH="$(sha256sum "$TARGET/boot/efi/EFI/Microsoft/Boot/bootmgfw.efi" | awk '{print $1}')"
+  [[ "$AFTER_WIN_HASH" == "$WINDOWS_EFI_HASH" ]] || fatal "Windows Boot Manager changed unexpectedly; installation halted for review."
+  if ! grep -Eqi 'Windows|Microsoft' "$TARGET/boot/grub/grub.cfg"; then echo '[WARN] Windows was preserved but was not added to the generated GRUB menu. UEFI firmware can still boot Windows directly.'; fi
+fi
+
+progress 93 "Verifying the installed system…"
+# SPECTRE_REALOS_FINAL_UUID_V1
+FINAL_ROOT_UUID="$(blkid -s UUID -o value "$ROOT_PART" 2>/dev/null || true)"
+FINAL_EFI_UUID="$(blkid -s UUID -o value "$EFI_PART" 2>/dev/null || true)"
+[[ -n "$FINAL_ROOT_UUID" && "$FINAL_ROOT_UUID" == "$ROOT_UUID" ]] || fatal "Installed root UUID changed or is unreadable during final verification."
+[[ -n "$FINAL_EFI_UUID" && "$FINAL_EFI_UUID" == "$EFI_UUID" ]] || fatal "Installed EFI UUID changed or is unreadable during final verification."
+mountpoint -q "$TARGET/boot/efi" || fatal "EFI partition is not mounted during final verification."
+if [[ "$MODE" == erase ]]; then
+  [[ -s "$TARGET/boot/efi/EFI/BOOT/BOOTX64.EFI" ]] || fatal "Portable UEFI fallback loader disappeared before installation completed."
+else
+  [[ -s "$TARGET/boot/efi/EFI/Spectre/grubx64.efi" ]] || fatal "Spectre UEFI loader disappeared before installation completed."
+fi
+# Account creation must never transfer ownership of / or system hierarchy nodes
+# to the desktop user, even when the source live image had stale UID 1000 metadata.
+normalize_target_hierarchy_ownership
+verify_target_root_ownership
+grep -q '^ID=spectre$' "$TARGET/etc/os-release" || fatal "Installed OS identity verification failed."
+grep -q "UUID=$ROOT_UUID / ext4" "$TARGET/etc/fstab" || fatal "Root filesystem table entry is missing."
+grep -q "UUID=$EFI_UUID /boot/efi vfat" "$TARGET/etc/fstab" || fatal "EFI filesystem table entry is missing."
+chroot "$TARGET" getent passwd "$USERNAME" >/dev/null || fatal "Installed user account is missing."
+TEST_HASH="$(chroot "$TARGET" getent shadow "$USERNAME" | cut -d: -f2)"; [[ -n "$TEST_HASH" && "$TEST_HASH" != '!'* && "$TEST_HASH" != '*'* ]] || fatal "Installed password hash is unusable."
+[[ ! -e "$TARGET/usr/local/sbin/spectre-installer" && ! -e "$TARGET/usr/local/sbin/spectre-installer-backend" ]] || fatal "Live installer leaked into the installed OS."
+if chroot "$TARGET" dpkg-query -W -f='${Status}' live-boot 2>/dev/null | grep -q 'install ok installed'; then fatal "live-boot remained installed on the target."; fi
+cat > "$TARGET/etc/spectre-installation" <<EOF
+SPECTRE_INSTALLATION=1
+INSTALLER_VERSION=$INSTALLER_VERSION
+INSTALL_MODE=$MODE
+BOOT_MODE=$BOOT_MODE
+ROOT_UUID=$ROOT_UUID
+EFI_UUID=$EFI_UUID
+HOSTNAME=$HOSTNAME
+TIMEZONE=$TIMEZONE
+LOCALE=$LOCALE
+KEYBOARD=$KEYBOARD
+EOF
+chmod 0644 "$TARGET/etc/spectre-installation"
+
+progress 98 "Syncing data and safely detaching the installed system…"
+install -d -m 0755 "$TARGET/var/log/spectre"
+install -m 0600 "$LOG" "$TARGET/var/log/spectre/installer.log"
+chown root:root "$TARGET/var/log/spectre/installer.log"
+sync
+unmount_tree || fatal "The installation was written but could not be cleanly unmounted."
+for p in "$TARGET" "$TARGET/boot/efi" "$SOURCE"; do mountpoint -q "$p" 2>/dev/null && fatal "Safety check: $p is still mounted."; done
+INSTALL_OK=1
+trap - EXIT INT TERM
+progress 100 "Spectre OS installation completed and verified."
+log_note "Installation completed and verified successfully."
+SUCCESS_LOG="$CALLER_HOME/Downloads/spectre-installer-success.log"
+if [[ -d "$CALLER_HOME/Downloads" ]]; then
+  cp -f "$LOG" "$SUCCESS_LOG" 2>/dev/null || true
+  chown "$CALLER_UID:$CALLER_UID" "$SUCCESS_LOG" 2>/dev/null || true
+  chmod 0600 "$SUCCESS_LOG" 2>/dev/null || true
+fi
+ui_emit 'DONE|Spectre OS installation completed and verified. Remove the installation USB/ISO before the next boot.'
+exit 0

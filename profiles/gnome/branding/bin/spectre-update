@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# Spectre Update backend — conservative Debian package updates with a stable
+# machine-readable listing for the Spectre Update Manager.
+set -euo pipefail
+# --progress is an explicit machine-readable GUI mode; established CLI behavior
+# remains unchanged for interactive administrators and shell callers.
+progress=0
+if [[ "${1:-}" == "--progress" ]]; then
+  progress=1
+  shift
+fi
+mode="${1:---check}"
+shift || true
+case "$mode" in
+  --check|check) mode=check ;;
+  --list-tsv|list) mode=list ;;
+  --refresh|refresh) mode=refresh ;;
+  --apply|apply) mode=apply ;;
+  --apply-packages|apply-packages) mode=apply-packages ;;
+  --history|history) mode=history ;;
+  *) echo 'Usage: spectre-update [--check|--list-tsv|--refresh|--apply|--apply-packages PKG...|--history]' >&2; exit 2 ;;
+esac
+
+needs_root=0
+case "$mode" in refresh|apply|apply-packages) needs_root=1;; esac
+if (( needs_root )) && [[ $EUID -ne 0 ]]; then
+  echo 'This update operation requires administrator privileges.' >&2
+  exit 77
+fi
+
+safe_package(){ [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9.+:-]*$ ]]; }
+preflight(){
+  if dpkg --audit 2>/dev/null | grep -q .; then
+    echo '[FAIL] dpkg reports an incomplete package state:' >&2
+    dpkg --audit >&2 || true
+    return 1
+  fi
+}
+
+# APT writes authentic dlstatus/pmstatus percentages to FD 3. Do not estimate
+# installation percentages or count unpack/configure callbacks as packages.
+# With --progress only, GUI authorization is the explicit consent to run and
+# preserve existing configuration files when packages request conffile choices.
+run_apt(){
+  if (( progress )); then
+    apt-get -o APT::Status-Fd=3 --assume-yes \
+      -o Dpkg::Options::=--force-confdef \
+      -o Dpkg::Options::=--force-confold "$@" 3>&1
+  else
+    apt-get "$@"
+  fi
+}
+stage(){
+  (( progress )) && printf 'SPECTRE_STAGE\t%s\n' "$1" || true
+}
+list_tsv(){
+  apt list --upgradable 2>/dev/null | while IFS= read -r line; do
+    [[ -z "$line" || "$line" == Listing* ]] && continue
+    local_pkg="${line%%/*}"
+    new="$(awk '{print $2}' <<<"$line")"
+    arch="$(awk '{print $3}' <<<"$line")"
+    old="$(sed -n 's/.*\[upgradable from: \([^]]*\)\].*/\1/p' <<<"$line")"
+    category='System'
+    [[ "$line" == *security* ]] && category='Security'
+    [[ "$local_pkg" == linux-* || "$local_pkg" == grub-* || "$local_pkg" == initramfs-* ]] && category='Core'
+    [[ "$local_pkg" == firefox* || "$local_pkg" == thunderbird* ]] && category='Application'
+    printf '%s\t%s\t%s\t%s\t%s\n' "$local_pkg" "${old:--}" "${new:--}" "${arch:--}" "$category"
+  done
+}
+
+case "$mode" in
+  list)
+    list_tsv
+    ;;
+  history)
+    shopt -s nullglob
+    logs=(/var/log/spectre/update-*.log)
+    for ((i=${#logs[@]}-1; i>=0 && i>=${#logs[@]}-20; i--)); do
+      file="${logs[$i]}"; printf '%s\t%s\n' "$(basename "$file")" "$(stat -c '%y' "$file" 2>/dev/null | cut -d. -f1 || true)"
+    done
+    ;;
+  check)
+    preflight
+    echo '[Spectre Update] Cached upgrade list:'
+    list_tsv || true
+    echo
+    echo 'Refresh package metadata with: sudo spectre-update --refresh'
+    ;;
+  refresh|apply|apply-packages)
+    preflight
+    install -d -m 0755 /var/log/spectre
+    log="/var/log/spectre/update-$(date +%Y%m%d-%H%M%S).log"
+    exec > >(tee -a "$log") 2>&1
+    # Validate the complete requested package set before network or package
+    # operations, including refresh. The GUI handles authentication via polkit.
+    pkgs=()
+    if [[ "$mode" == apply-packages ]]; then
+      (( $# > 0 )) || { echo '[FAIL] No packages selected.'; exit 2; }
+      for pkg in "$@"; do
+        safe_package "$pkg" || { echo "[FAIL] Invalid package name: $pkg"; exit 2; }
+        pkgs+=("$pkg")
+      done
+    fi
+    if (( progress )); then
+      export DEBIAN_FRONTEND=noninteractive
+    else
+      export DEBIAN_FRONTEND=readline
+    fi
+    echo "[Spectre Update] Mode: $mode"
+    echo '[Spectre Update] Refreshing Debian and security package metadata...'
+    stage refresh
+    run_apt update
+    if [[ "$mode" == refresh ]]; then
+      echo '[Spectre Update] Metadata refresh complete.'
+    elif [[ "$mode" == apply ]]; then
+      echo '[Spectre Update] Applying conservative upgrades; package removals are forbidden.'
+      stage install
+      run_apt --no-remove upgrade
+    else
+      echo "[Spectre Update] Applying ${#pkgs[@]} selected upgrade(s); package removals are forbidden."
+      stage install
+      run_apt --no-remove install --only-upgrade "${pkgs[@]}"
+    fi
+    if [[ -f /var/run/reboot-required ]]; then
+      echo '[Spectre Update] Restart recommended.'
+      cat /var/run/reboot-required.pkgs 2>/dev/null || true
+    fi
+    echo '[Spectre Update] Operation complete.'
+    echo "Log: $log"
+    ;;
+esac

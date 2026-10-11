@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Spectre Taskbar
+Comment=Configure taskbar visibility, position and appearance
+Exec=spectre-taskbar-settings
+Icon=preferences-system
+Terminal=false
+Categories=Settings;DesktopSettings;
+Keywords=Spectre;Taskbar;Dock;Auto Hide;Intellihide;Panel;
+StartupNotify=true

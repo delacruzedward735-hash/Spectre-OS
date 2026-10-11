@@ -1,0 +1,19 @@
+# Spectre interactive shell styling.
+case $- in
+  *i*) ;;
+  *) return ;;
+esac
+
+export COLORTERM=truecolor
+export EDITOR=nano
+
+# Two-line cyber-blue prompt inspired by the Spectre desktop concept.
+PS1='\[\e[38;2;30;174;255m\]┌─(\u@spectre)-[\w]\n└─$ \[\e[0m\]'
+
+if command -v fastfetch >/dev/null 2>&1; then
+    alias neofetch='fastfetch --config ~/.config/fastfetch/config.jsonc'
+fi
+
+alias ll='ls -alF --color=auto'
+alias la='ls -A --color=auto'
+alias l='ls -CF --color=auto'

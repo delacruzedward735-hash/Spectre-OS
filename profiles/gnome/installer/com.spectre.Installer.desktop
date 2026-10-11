@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Install Spectre OS
+GenericName=System Installer
+Comment=Install Spectre OS to this computer
+Exec=/usr/local/bin/spectre-installer-launcher
+TryExec=/usr/local/bin/spectre-installer-launcher
+Icon=spectre-installer
+Terminal=false
+StartupNotify=true
+Categories=System;Settings;
+Keywords=Spectre;Install;Installer;System;
+NoDisplay=false
+Hidden=false
+OnlyShowIn=GNOME;

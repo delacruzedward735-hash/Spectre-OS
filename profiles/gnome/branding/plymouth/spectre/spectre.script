@@ -1,0 +1,120 @@
+# Spectre OS RC4.5 production Plymouth theme
+# The complete emblem + wordmark + loader is centered as one visual group.
+# Layout is recalculated during refresh so a late DRM/KMS mode switch cannot
+# leave the splash centered for the firmware resolution instead of the final
+# graphical framebuffer.
+
+Window.SetBackgroundTopColor(0.002, 0.006, 0.018);
+Window.SetBackgroundBottomColor(0.000, 0.003, 0.012);
+
+screen_w = Window.GetWidth();
+screen_h = Window.GetHeight();
+
+logo_size = 288;
+if (screen_h < 850) logo_size = 220;
+if (screen_h > 1200) logo_size = 320;
+
+logo_source = Image("spectre-icon.png");
+logo_image = logo_source.Scale(logo_size, logo_size);
+word_source = Image("spectre-wordmark.png");
+word_width = 300;
+if (screen_h < 850) word_width = 250;
+word_height = word_width * 110 / 560;
+word_image = word_source.Scale(word_width, word_height);
+dot_source = Image("dot.png");
+dot_image = dot_source.Scale(14, 14);
+
+logo = Sprite(logo_image);
+word = Sprite(word_image);
+dot1 = Sprite(dot_image);
+dot2 = Sprite(dot_image);
+dot3 = Sprite(dot_image);
+
+fun layout_group ()
+{
+    # Window dimensions can change after Plymouth starts when DRM/KMS takes
+    # ownership of the display. Re-reading them here fixes the off-center
+    # splash seen when QEMU switches from its firmware mode to the final mode.
+    current_w = Window.GetWidth();
+    current_h = Window.GetHeight();
+
+    gap_logo_word = 25;
+    gap_word_dots = 24;
+    group_h = logo_image.GetHeight() + gap_logo_word + word_image.GetHeight() + gap_word_dots + dot_image.GetHeight();
+    group_y = (current_h - group_h) / 2;
+
+    logo.SetX((current_w - logo_image.GetWidth()) / 2);
+    logo.SetY(group_y);
+
+    word_y = group_y + logo_image.GetHeight() + gap_logo_word;
+    word.SetX((current_w - word_image.GetWidth()) / 2);
+    word.SetY(word_y);
+
+    dots_y = word_y + word_image.GetHeight() + gap_word_dots;
+    dot1.SetX(current_w / 2 - 26);
+    dot2.SetX(current_w / 2 - 7);
+    dot3.SetX(current_w / 2 + 12);
+    dot1.SetY(dots_y);
+    dot2.SetY(dots_y);
+    dot3.SetY(dots_y);
+}
+
+layout_group();
+logo.SetZ(10);
+word.SetZ(20);
+dot1.SetZ(21);
+dot2.SetZ(21);
+dot3.SetZ(21);
+
+logo.SetOpacity(0.0);
+word.SetOpacity(0.0);
+dot1.SetOpacity(0.0);
+dot2.SetOpacity(0.0);
+dot3.SetOpacity(0.0);
+
+frame = 0;
+
+fun clamp01(t)
+{
+    if (t < 0.0) return 0.0;
+    if (t > 1.0) return 1.0;
+    return t;
+}
+
+fun smoothstep(t)
+{
+    t = clamp01(t);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+fun dotpulse(phase)
+{
+    return 0.18 + 0.82 * (0.5 + 0.5 * Math.Sin(phase));
+}
+
+fun refresh_callback ()
+{
+    frame = frame + 1;
+    layout_group();
+
+    logo_in = smoothstep(frame / 28.0);
+    logo.SetOpacity(logo_in);
+
+    if (frame > 28)
+    {
+        breathe = 0.965 + 0.035 * (0.5 + 0.5 * Math.Sin((frame - 28) / 13.0));
+        logo.SetOpacity(breathe);
+    }
+
+    word_in = smoothstep((frame - 26) / 20.0);
+    word.SetOpacity(word_in);
+
+    dots_in = smoothstep((frame - 40) / 14.0);
+    phase = frame / 7.0;
+    dot1.SetOpacity(dots_in * dotpulse(phase));
+    dot2.SetOpacity(dots_in * dotpulse(phase - 2.094));
+    dot3.SetOpacity(dots_in * dotpulse(phase - 4.188));
+}
+
+Plymouth.SetRefreshRate(40);
+Plymouth.SetRefreshFunction(refresh_callback);

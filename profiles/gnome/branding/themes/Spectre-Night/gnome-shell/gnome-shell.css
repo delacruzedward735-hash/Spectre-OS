@@ -1,0 +1,286 @@
+/* Spectre Night 0.9 — GNOME Shell 48
+ * Dark navy glass, subtle electric blue, comfortable spacing.
+ */
+@import url("resource:///org/gnome/shell/theme/gnome-shell.css");
+
+stage {
+    font-family: Cantarell, Sans-Serif;
+    color: #edf5ff;
+}
+
+#panel {
+    background-color: rgba(1, 6, 15, 0.92);
+    border-bottom: 1px solid rgba(52, 154, 255, 0.24);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.24);
+    height: 40px;
+    color: #edf5ff;
+}
+
+#panel .panel-button {
+    color: #edf5ff;
+    font-weight: 650;
+    border-radius: 12px;
+    margin: 4px 2px;
+    padding: 0 8px;
+    transition-duration: 140ms;
+}
+
+#panel .panel-button:hover,
+#panel .panel-button:active,
+#panel .panel-button:checked,
+#panel .panel-button:focus {
+    background-color: rgba(25, 132, 244, 0.16);
+    box-shadow: inset 0 0 0 1px rgba(84, 193, 255, 0.20);
+}
+
+#panelActivities {
+    width: 0;
+    min-width: 0;
+    padding: 0;
+    margin: 0;
+    opacity: 0;
+}
+
+.panel-status-indicators-box,
+.panel-status-menu-box { spacing: 7px; }
+
+/* Menus and shell surfaces */
+.popup-menu-content,
+.candidate-popup-content,
+.quick-settings,
+.message-list,
+.calendar,
+.datemenu-calendar-column {
+    background-color: rgba(3, 10, 23, 0.86);
+    color: #edf5ff;
+    border: 1px solid rgba(67, 166, 255, 0.25);
+    border-radius: 20px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.50);
+    padding: 8px;
+}
+
+.popup-menu-item {
+    border-radius: 12px;
+    color: #dfeaff;
+    padding: 8px 10px;
+    transition-duration: 120ms;
+}
+
+.popup-menu-item:hover,
+.popup-menu-item:focus,
+.popup-menu-item:selected {
+    background-color: rgba(22, 126, 235, 0.18);
+    color: #ffffff;
+}
+
+.popup-separator-menu-item .popup-separator-menu-item-separator {
+    background-color: rgba(91, 160, 226, 0.16);
+}
+
+.quick-toggle,
+.quick-menu-toggle .quick-toggle,
+.quick-menu-toggle .quick-toggle-arrow {
+    background-color: rgba(13, 28, 50, 0.82);
+    color: #edf5ff;
+    border-radius: 15px;
+    transition-duration: 140ms;
+}
+
+.quick-toggle:hover,
+.quick-menu-toggle .quick-toggle:hover {
+    background-color: rgba(22, 52, 88, 0.90);
+}
+
+.quick-toggle:checked,
+.quick-menu-toggle .quick-toggle:checked {
+    background-color: #147ee8;
+    color: white;
+    box-shadow: inset 0 0 0 1px rgba(114, 218, 255, 0.46);
+}
+
+/* Floating left dock */
+.dash-background,
+.dashtodockContainer .dash-background {
+    background-color: rgba(2, 9, 21, 0.68);
+    border: 1px solid rgba(59, 161, 255, 0.29);
+    border-radius: 22px;
+    box-shadow: 0 14px 42px rgba(0, 0, 0, 0.40);
+}
+
+.dash-item-container .app-well-app-running-dot { background-color: #4cc8ff; }
+
+.app-well-app .overview-icon {
+    border-radius: 15px;
+    transition-duration: 140ms;
+}
+
+.app-well-app:hover .overview-icon,
+.app-well-app:focus .overview-icon,
+.app-well-app:selected .overview-icon {
+    background-color: rgba(20, 126, 232, 0.17);
+    box-shadow: inset 0 0 0 1px rgba(77, 188, 255, 0.18);
+}
+
+/* Overview and app grid */
+.search-entry {
+    background-color: rgba(4, 13, 29, 0.86);
+    color: #edf5ff;
+    border: 1px solid rgba(67, 166, 255, 0.30);
+    border-radius: 18px;
+    padding: 10px 15px;
+    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.28);
+}
+
+.search-entry:focus {
+    border-color: rgba(81, 201, 255, 0.84);
+    box-shadow: 0 0 0 2px rgba(21, 126, 232, 0.19);
+}
+
+.search-section-content,
+.list-search-result,
+.grid-search-result { border-radius: 15px; }
+
+.workspace-thumbnail-indicator {
+    border: 2px solid #4cc8ff;
+    border-radius: 11px;
+}
+
+.workspace-switcher-container {
+    background-color: rgba(3, 10, 24, 0.86);
+    border: 1px solid rgba(66, 168, 255, 0.28);
+    border-radius: 20px;
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.36);
+}
+
+/* Calendar, notifications and dialogs */
+.notification-banner,
+.message {
+    background-color: rgba(4, 12, 27, 0.88);
+    color: #edf5ff;
+    border: 1px solid rgba(64, 163, 255, 0.27);
+    border-radius: 18px;
+    box-shadow: 0 12px 38px rgba(0, 0, 0, 0.40);
+}
+
+.modal-dialog,
+.prompt-dialog {
+    background-color: #07111f;
+    color: #edf5ff;
+    border: 1px solid rgba(66, 168, 255, 0.31);
+    border-radius: 22px;
+    box-shadow: 0 20px 62px rgba(0, 0, 0, 0.52);
+}
+
+.calendar-day-base:selected,
+.calendar-day-base:hover,
+.calendar-day-base:focus {
+    background-color: rgba(20, 126, 232, 0.25);
+    border-radius: 10px;
+}
+
+/* OSD and switchers */
+.osd-window,
+.switcher-list,
+.resize-popup {
+    background-color: rgba(4, 11, 25, 0.88);
+    color: #edf5ff;
+    border: 1px solid rgba(67, 166, 255, 0.27);
+    border-radius: 20px;
+    box-shadow: 0 14px 42px rgba(0, 0, 0, 0.42);
+}
+
+.window-caption {
+    color: #f1f7ff;
+    background-color: rgba(3, 10, 24, 0.90);
+    border-radius: 11px;
+    padding: 6px 10px;
+}
+
+/* RC5.5 — nested Quick Settings / power-session menus follow Spectre Night. */
+.popup-menu .popup-sub-menu,
+.quick-settings .popup-sub-menu,
+.quick-settings .popup-menu-content,
+.quick-settings-system-item .popup-menu-content {
+    background-color: rgba(5, 14, 30, 0.97);
+    color: #edf5ff;
+}
+.popup-menu .popup-sub-menu .popup-menu-item,
+.quick-settings .popup-menu-item,
+.quick-settings-system-item .popup-menu-item,
+.quick-settings .popup-menu-item StLabel,
+.quick-settings-system-item .popup-menu-item StLabel {
+    color: #e4efff;
+}
+
+
+/* RC5.6 — GNOME 48 QuickToggleMenu/power-session contrast hardening.
+ * Quick Settings submenus may be reparented outside .quick-settings, so style
+ * the exported quick-toggle-menu surface directly instead of depending only on
+ * ancestor selectors. */
+.quick-toggle-menu,
+.quick-toggle-menu .popup-menu-content,
+.quick-toggle-menu .popup-sub-menu,
+.quick-settings-system-item .popup-sub-menu {
+    background-color: rgba(5, 14, 30, 0.985);
+    color: #edf5ff;
+    border-color: rgba(67, 166, 255, 0.28);
+}
+.quick-toggle-menu .popup-menu-item,
+.quick-toggle-menu .popup-menu-item StLabel,
+.quick-settings-system-item .popup-sub-menu .popup-menu-item,
+.quick-settings-system-item .popup-sub-menu .popup-menu-item StLabel {
+    color: #e9f3ff;
+}
+.quick-toggle-menu .popup-menu-item:hover,
+.quick-toggle-menu .popup-menu-item:focus,
+.quick-toggle-menu .popup-menu-item:selected,
+.quick-settings-system-item .popup-sub-menu .popup-menu-item:hover,
+.quick-settings-system-item .popup-sub-menu .popup-menu-item:focus {
+    background-color: rgba(22, 126, 235, 0.22);
+    color: #ffffff;
+}
+.quick-toggle-menu .popup-menu-item:insensitive,
+.quick-settings-system-item .popup-sub-menu .popup-menu-item:insensitive {
+    color: rgba(220, 235, 255, 0.52);
+}
+.quick-toggle-menu .popup-separator-menu-item .popup-separator-menu-item-separator {
+    background-color: rgba(91, 160, 226, 0.18);
+}
+
+/* SPECTRE_DIALOG_CONTRAST_V2 — GNOME 48 dialog readability. */
+.end-session-dialog,
+.end-session-dialog StLabel,
+.modal-dialog StLabel,
+.prompt-dialog StLabel {
+    color: #edf5ff;
+}
+
+.modal-dialog-button,
+.modal-dialog-linked-button,
+.modal-dialog .button,
+.prompt-dialog .button,
+.end-session-dialog .button {
+    color: #edf5ff;
+    background-color: rgba(12, 29, 52, 0.98);
+    border: 1px solid rgba(72, 169, 255, 0.34);
+    box-shadow: none;
+}
+
+.modal-dialog-button:hover,
+.modal-dialog-linked-button:hover,
+.modal-dialog .button:hover,
+.prompt-dialog .button:hover,
+.end-session-dialog .button:hover,
+.modal-dialog-button:focus,
+.modal-dialog-linked-button:focus {
+    color: #ffffff;
+    background-color: rgba(26, 104, 184, 0.48);
+}
+
+.modal-dialog-button:insensitive,
+.modal-dialog-linked-button:insensitive,
+.modal-dialog .button:insensitive,
+.end-session-dialog .button:insensitive {
+    color: rgba(237, 245, 255, 0.48);
+    background-color: rgba(10, 22, 39, 0.72);
+}

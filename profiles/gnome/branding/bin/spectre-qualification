@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -u
+
+spectre_find_admin_cmd() {
+  command -v "$1" 2>/dev/null || { [[ -x "/usr/sbin/$1" ]] && printf '/usr/sbin/%s\n' "$1"; }
+}
+
+passes=0; warnings=0; failures=0
+ok(){ passes=$((passes+1)); printf '[PASS] %-30s %s\n' "$1" "${2:-}"; }
+warn(){ warnings=$((warnings+1)); printf '[WARN] %-30s %s\n' "$1" "${2:-}"; }
+fail(){ failures=$((failures+1)); printf '[FAIL] %-30s %s\n' "$1" "${2:-}"; }
+
+printf 'Spectre OS Qualification\n'
+printf '========================\n'
+
+if [[ -f /etc/spectre-installation ]]; then ok 'Installed marker' present; else fail 'Installed marker' missing; fi
+if findmnt -rn /run/live/medium >/dev/null 2>&1 || findmnt -rn /lib/live/mount/medium >/dev/null 2>&1; then fail 'Live media leakage' detected; else ok 'Live media leakage' none; fi
+root="$(findmnt -nro SOURCE / 2>/dev/null || true)"; fs="$(findmnt -nro FSTYPE / 2>/dev/null || true)"
+[[ "$root" == /dev/* && "$fs" != overlay ]] && ok 'Installed root' "$root ($fs)" || fail 'Installed root' "${root:-unknown} (${fs:-unknown})"
+[[ "$(uname -r)" == *-spectre* ]] && ok 'Kernel' "$(uname -r)" || fail 'Kernel' "$(uname -r)"
+[[ -f "/boot/initrd.img-$(uname -r)" ]] && ok 'Initramfs' matched || fail 'Initramfs' missing
+[[ -d "/lib/modules/$(uname -r)" ]] && ok 'Kernel modules' matched || fail 'Kernel modules' missing
+mountpoint -q /boot/efi 2>/dev/null && ok 'EFI partition' mounted || warn 'EFI partition' not-mounted
+grub_install="$(spectre_find_admin_cmd grub-install || true)"
+grub_mkconfig="$(spectre_find_admin_cmd grub-mkconfig || true)"
+update_grub="$(spectre_find_admin_cmd update-grub || true)"
+if [[ -n "$grub_install" && -n "$grub_mkconfig" && -n "$update_grub" && -s /boot/grub/grub.cfg ]]; then ok 'GRUB tooling' present; else warn 'GRUB tooling' unavailable; fi
+
+if systemctl is-active --quiet NetworkManager.service 2>/dev/null; then ok 'NetworkManager' active; else fail 'NetworkManager' inactive; fi
+if systemctl is-active --quiet gdm3.service 2>/dev/null || systemctl is-active --quiet gdm.service 2>/dev/null; then ok 'GDM' active; else warn 'GDM' inactive; fi
+if systemctl --user is-active --quiet pipewire.service 2>/dev/null || pgrep -x pipewire >/dev/null 2>&1; then ok 'PipeWire' active; else warn 'PipeWire' inactive; fi
+if systemctl is-active --quiet power-profiles-daemon.service 2>/dev/null; then ok 'Power profiles' active; else warn 'Power profiles' unavailable; fi
+systemctl is-enabled --quiet fstrim.timer 2>/dev/null && ok 'TRIM timer' enabled || warn 'TRIM timer' disabled
+
+zram="$(awk 'NR>1 && $1 ~ /^\/dev\/zram/{print $1; exit}' /proc/swaps 2>/dev/null || true)"
+[[ -n "$zram" ]] && ok 'Compressed swap' "$zram" || warn 'Compressed swap' inactive
+
+ufw_bin="$(spectre_find_admin_cmd ufw || true)"
+if [[ -r /etc/ufw/ufw.conf ]] && grep -Eq '^ENABLED=(yes|YES|true|TRUE)$' /etc/ufw/ufw.conf; then
+  ok 'Firewall' enabled
+elif [[ -n "$ufw_bin" ]] && "$ufw_bin" status 2>/dev/null | grep -q '^Status: active'; then
+  ok 'Firewall' active
+else
+  warn 'Firewall' inactive
+fi
+aa_bin="$(spectre_find_admin_cmd aa-status || true)"
+if [[ -n "$aa_bin" ]] && "$aa_bin" --enabled >/dev/null 2>&1; then ok 'AppArmor' enabled; else warn 'AppArmor' unavailable; fi
+
+failed_units="$(systemctl --failed --no-legend --plain 2>/dev/null | awk 'NF{n++} END{print n+0}')"
+[[ "$failed_units" == 0 ]] && ok 'Failed systemd units' 0 || fail 'Failed systemd units' "$failed_units"
+
+for p in /usr/local/sbin/spectre-installer /usr/local/sbin/spectre-installer-backend /etc/sudoers.d/90-spectre-live /usr/share/applications/com.spectre.Installer.desktop; do
+  [[ ! -e "$p" ]] || fail 'Live installer cleanup' "$p remains"
+done
+if [[ ! -e /usr/local/sbin/spectre-installer && ! -e /etc/sudoers.d/90-spectre-live ]]; then ok 'Live installer cleanup' clean; fi
+
+avail="$(df -Pk / 2>/dev/null | awk 'NR==2{print $4}')"
+if [[ "$avail" =~ ^[0-9]+$ ]]; then
+  (( avail >= 5242880 )) && ok 'Disk free space' "$((avail/1024/1024)) GiB" || warn 'Disk free space' "$((avail/1024/1024)) GiB"
+fi
+
+if command -v spectre-installed-health >/dev/null 2>&1; then
+  if spectre-installed-health >/tmp/spectre-qualification-health.$$ 2>&1; then ok 'Installed health suite' passed; else fail 'Installed health suite' failed; fi
+  rm -f /tmp/spectre-qualification-health.$$ 2>/dev/null || true
+fi
+
+printf '\nRESULT: %d PASS, %d WARN, %d FAIL\n' "$passes" "$warnings" "$failures"
+if ((failures)); then echo 'OVERALL: FAIL'; exit 1; fi
+if ((warnings)); then echo 'OVERALL: PASS WITH WARNINGS'; else echo 'OVERALL: PASS'; fi

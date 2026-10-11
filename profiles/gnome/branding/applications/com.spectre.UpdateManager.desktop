@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Spectre Update Manager
+Comment=Review and install system updates
+Exec=/usr/local/bin/spectre-update-manager
+Icon=software-update-available-symbolic
+Terminal=false
+Categories=System;Settings;
+Keywords=update;upgrade;security;packages;
+StartupNotify=true

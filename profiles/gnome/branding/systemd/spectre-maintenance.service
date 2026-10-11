@@ -1,0 +1,11 @@
+[Unit]
+Description=Spectre OS safe maintenance pass
+ConditionPathExists=/etc/spectre-installation
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/spectre-maintenance
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

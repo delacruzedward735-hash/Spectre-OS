@@ -1,0 +1,13 @@
+# Spectre OS greeter policy for Debian 13 / GDM 48.
+# Explicit GVariant type annotation is required for an empty string array.
+
+[org/gnome/shell]
+enabled-extensions=@as []
+disable-user-extensions=true
+
+[org/gnome/desktop/interface]
+color-scheme='prefer-dark'
+accent-color='blue'
+
+[org/gnome/login-screen]
+logo='/usr/share/pixmaps/spectre-gdm-logo.png'

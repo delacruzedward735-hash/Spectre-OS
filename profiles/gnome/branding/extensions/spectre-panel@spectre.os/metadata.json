@@ -1,0 +1,12 @@
+{
+  "uuid": "spectre-panel@spectre.os",
+  "name": "Spectre Panel",
+  "description": "Spectre OS shell identity, quick-launch hub, workspace controls, app-grid recovery and desktop pin actions.",
+  "shell-version": [
+    "48"
+  ],
+  "version": 9,
+  "session-modes": [
+    "user"
+  ]
+}

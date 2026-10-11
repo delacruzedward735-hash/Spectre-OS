@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -u
+
+[[ -f /etc/spectre-installation ]] || exit 0
+if findmnt -rn /run/live/medium >/dev/null 2>&1 || findmnt -rn /lib/live/mount/medium >/dev/null 2>&1; then exit 0; fi
+
+rm -f \
+  /etc/sudoers.d/90-spectre-live \
+  /etc/xdg/autostart/spectre-live-installer.desktop \
+  /usr/share/applications/com.spectre.Installer.desktop \
+  /usr/local/bin/spectre-installer-launcher \
+  /usr/local/bin/spectre-live-installer-setup \
+  /usr/local/sbin/spectre-installer \
+  /usr/local/sbin/spectre-installer-backend \
+  /etc/polkit-1/rules.d/49-spectre-installer.rules \
+  /usr/share/pixmaps/spectre-installer.png
+rm -rf /usr/share/icons/hicolor/*/apps/spectre-installer.png 2>/dev/null || true
+rm -rf /var/lib/live /etc/live 2>/dev/null || true
+systemctl daemon-reload >/dev/null 2>&1 || true
+printf '[ok] Installed Spectre runtime contains no known live-installer privilege artifacts.\n'

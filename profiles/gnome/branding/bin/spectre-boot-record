@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ -f /etc/spectre-installation ]] || exit 0
+if findmnt -rn /run/live/medium >/dev/null 2>&1 || findmnt -rn /lib/live/mount/medium >/dev/null 2>&1; then
+  exit 0
+fi
+
+state_dir=/var/lib/spectre
+history="$state_dir/boot-history.log"
+current="$state_dir/last-boot"
+install -d -m 0755 "$state_dir"
+
+boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf unknown)"
+root_src="$(findmnt -nro SOURCE / 2>/dev/null || printf unknown)"
+root_uuid=""
+if [[ "$root_src" == /dev/* ]]; then
+  root_uuid="$(blkid -s UUID -o value "$root_src" 2>/dev/null || true)"
+fi
+build_id="$(sed -n 's/^BUILD_ID=//p' /etc/spectre-build 2>/dev/null | head -1)"
+installer_version="$(sed -n 's/^INSTALLER_VERSION=//p' /etc/spectre-installation 2>/dev/null | head -1)"
+now="$(date -Is)"
+kernel="$(uname -r)"
+
+line="$now\t$boot_id\t$kernel\t$root_src\t${root_uuid:-unknown}\t${build_id:-unknown}\t${installer_version:-unknown}"
+printf '%b\n' "$line" >> "$history"
+tail -n 20 "$history" > "$history.tmp"
+mv "$history.tmp" "$history"
+chmod 0644 "$history"
+
+cat > "$current" <<STATE
+TIMESTAMP=$now
+BOOT_ID=$boot_id
+KERNEL=$kernel
+ROOT_SOURCE=$root_src
+ROOT_UUID=${root_uuid:-unknown}
+BUILD_ID=${build_id:-unknown}
+INSTALLER_VERSION=${installer_version:-unknown}
+STATE
+chmod 0644 "$current"

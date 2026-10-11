@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Spectre Run — keyboard-first launcher for Super+R.
+
+Commands are tokenized with shlex and executed without a shell. Paths and URLs
+are opened with their default handlers. A bounded local history is stored in
+~/.cache/spectre/run-history.json and can be cleared from the UI.
+"""
+from __future__ import annotations
+import json, os, shlex, subprocess
+from pathlib import Path
+
+import gi
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+from gi.repository import Adw, Gio, GLib, Gtk
+
+APP_ID='com.spectre.Run'
+HISTORY=Path.home()/'.cache/spectre/run-history.json'
+
+class RunApp(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID)
+        self.history=[]
+    def do_activate(self):
+        if self.props.active_window:
+            self.entry.grab_focus(); self.props.active_window.present(); return
+        try:
+            self.history=json.loads(HISTORY.read_text()) if HISTORY.exists() else []
+        except Exception: self.history=[]
+        self.win=Adw.ApplicationWindow(application=self, title='Spectre Run')
+        self.win.set_default_size(620, 260); self.win.set_resizable(False)
+        toolbar=Adw.ToolbarView(); header=Adw.HeaderBar(); toolbar.add_top_bar(header)
+        title=Adw.WindowTitle(title='Run', subtitle='Open an app, path or web address')
+        header.set_title_widget(title)
+        box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_margin_top(22); box.set_margin_bottom(22); box.set_margin_start(22); box.set_margin_end(22)
+        self.entry=Gtk.Entry(); self.entry.set_placeholder_text('Type a command, path or URL…')
+        self.entry.set_icon_from_icon_name(Gtk.EntryIconPosition.PRIMARY,'system-run-symbolic')
+        self.entry.connect('activate', self._run); box.append(self.entry)
+        self.status=Gtk.Label(label='Examples: firefox  •  ~/Documents  •  https://myportfoliohub.online')
+        self.status.set_xalign(0); self.status.add_css_class('dim-label'); box.append(self.status)
+        if self.history:
+            group=Adw.PreferencesGroup(title='Recent')
+            for text in self.history[:5]:
+                row=Adw.ActionRow(title=text, activatable=True)
+                row.connect('activated', lambda _r, value=text: (self.entry.set_text(value), self.entry.grab_focus()))
+                group.add(row)
+            box.append(group)
+        toolbar.set_content(box); self.win.set_content(toolbar); self.win.present(); self.entry.grab_focus()
+    def _save_history(self, text):
+        values=[text]+[v for v in self.history if v != text]
+        self.history=values[:15]
+        try:
+            HISTORY.parent.mkdir(parents=True, exist_ok=True)
+            HISTORY.write_text(json.dumps(self.history, ensure_ascii=False))
+        except OSError: pass
+    def _run(self, _entry):
+        text=self.entry.get_text().strip()
+        if not text: return
+        try:
+            expanded=os.path.expanduser(os.path.expandvars(text))
+            if '://' in text:
+                Gio.AppInfo.launch_default_for_uri(text, None)
+            elif Path(expanded).exists():
+                Gio.AppInfo.launch_default_for_uri(Path(expanded).resolve().as_uri(), None)
+            else:
+                argv=shlex.split(text)
+                if not argv: return
+                subprocess.Popen(argv, start_new_session=True)
+            self._save_history(text); self.win.close()
+        except (OSError, ValueError, GLib.Error) as exc:
+            self.status.set_text(f'Unable to run: {exc}')
+            self.status.add_css_class('error')
+
+if __name__=='__main__': raise SystemExit(RunApp().run(None))

@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -u
+
+status=0
+ok(){ printf '[OK]   %s\n' "$*"; }
+warn(){ printf '[WARN] %s\n' "$*"; }
+fail(){ printf '[FAIL] %s\n' "$*"; status=1; }
+
+echo '[Spectre] Shell runtime health'
+if [[ -r /etc/spectre-build ]]; then
+  cat /etc/spectre-build
+else
+  warn '/etc/spectre-build is missing'
+fi
+
+echo
+for uuid in spectre-panel@spectre.os spectre-hud@spectre.os; do
+  if ! command -v gnome-extensions >/dev/null 2>&1; then
+    fail 'gnome-extensions command missing'
+    break
+  fi
+  info="$(gnome-extensions info "$uuid" 2>&1 || true)"
+  if grep -Eq '^[[:space:]]*State:[[:space:]]+ACTIVE[[:space:]]*$' <<<"$info"; then
+    ok "$uuid state ACTIVE"
+  else
+    fail "$uuid is not ACTIVE"
+    printf '%s\n' "$info" | sed 's/^/       /'
+  fi
+done
+
+# RC5.6 unified desktop: DING remains the file-backed provider while the
+# lightweight Spectre menu is an ACTIVE Shell-background fallback.  This closes
+# the monitor-resize gap that otherwise exposes GNOME's unrelated 3-item menu.
+spectre_desktop_info="$(gnome-extensions info spectre-desktop-menu@spectre.os 2>&1 || true)"
+ding_info="$(gnome-extensions info ding@rastersoft.com 2>&1 || true)"
+if grep -Eq '^[[:space:]]*State:[[:space:]]+ACTIVE[[:space:]]*$' <<<"$ding_info"; then
+  ok 'Desktop Icons NG ACTIVE (unified Spectre desktop)'
+else
+  fail 'Desktop Icons NG is not ACTIVE'
+  printf '%s\n' "$ding_info" | sed 's/^/       /'
+fi
+if grep -Eq '^[[:space:]]*State:[[:space:]]+ACTIVE[[:space:]]*$' <<<"$spectre_desktop_info"; then
+  ok 'Spectre Shell background fallback ACTIVE'
+else
+  fail 'Spectre Shell background fallback is not ACTIVE'
+  printf '%s\n' "$spectre_desktop_info" | sed 's/^/       /'
+fi
+
+echo
+if gsettings get org.gnome.shell enabled-extensions 2>/dev/null | grep -q 'spectre-desktop-ux@spectre.os'; then
+  fail 'retired spectre-desktop-ux is still enabled'
+else
+  ok 'retired spectre-desktop-ux is not enabled'
+fi
+
+if [[ -d /usr/share/gnome-shell/extensions/spectre-desktop-ux@spectre.os ]]; then
+  fail 'retired spectre-desktop-ux system directory still exists'
+else
+  ok 'retired spectre-desktop-ux system directory is absent'
+fi
+
+if command -v spectre-taskbar-settings >/dev/null 2>&1; then
+  ok 'Spectre Taskbar Settings installed'
+else
+  fail 'Spectre Taskbar Settings missing'
+fi
+
+if command -v spectre-appearance-sync >/dev/null 2>&1; then ok 'appearance synchronization installed'; else fail 'appearance synchronization missing'; fi
+if command -v spectre-desktop-apps >/dev/null 2>&1; then ok 'Desktop Apps & Icons installed'; else fail 'Desktop Apps & Icons missing'; fi
+if command -v spectre-desktop-state >/dev/null 2>&1; then ok 'unified desktop state helper installed'; else fail 'unified desktop state helper missing'; fi
+if command -v conky >/dev/null 2>&1 || pgrep -x conky >/dev/null 2>&1; then fail 'retired Conky monitor is present/running'; else ok 'retired Conky monitor absent'; fi
+
+if systemctl is-active --quiet NetworkManager; then ok 'NetworkManager active'; else fail 'NetworkManager not active'; fi
+if systemctl is-enabled networking.service 2>/dev/null | grep -qx masked; then ok 'legacy networking.service masked'; else fail 'legacy networking.service not masked'; fi
+
+failed_units="$(systemctl --failed --no-legend --plain 2>/dev/null || true)"
+if [[ -z "$failed_units" ]]; then
+  ok 'no failed systemd units'
+else
+  warn 'failed systemd units exist:'
+  printf '%s\n' "$failed_units"
+fi
+
+echo
+if ((status == 0)); then
+  echo '[ok] Spectre Shell runtime health passed.'
+else
+  echo '[FAIL] Spectre Shell runtime health failed.'
+fi
+exit "$status"

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Spectre Welcome
+Exec=spectre-welcome --autostart
+OnlyShowIn=GNOME;
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=3
+NoDisplay=true

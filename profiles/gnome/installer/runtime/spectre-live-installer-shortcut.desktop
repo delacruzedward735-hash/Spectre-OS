@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Spectre Live Installer Shortcut
+Exec=/usr/local/bin/spectre-live-installer-shortcut-setup
+NoDisplay=true
+Hidden=false
+OnlyShowIn=GNOME;
+X-GNOME-Autostart-enabled=true

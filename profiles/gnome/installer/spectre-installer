@@ -1,0 +1,1258 @@
+#!/usr/bin/env python3
+"""Spectre OS Installer RC5.6 — stable live/installed flow + live progress UX.
+
+The frontend always runs as the live desktop user. Privilege is requested only
+for the final validated installation plan through spectre-installer-backend.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import threading
+import time
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gio, GLib, Gtk
+
+APP_ID = "com.spectre.Installer"
+APP_TITLE = "Install Spectre OS"
+ICON_PATH = "/usr/share/pixmaps/spectre-installer.png"
+WALLPAPER_PATH = "/usr/share/backgrounds/spectre/spectre-gnome.png"
+SPECTRE_LOGO_PATH = "/usr/share/pixmaps/spectre-logo.png"
+CREATOR_NAME = "John Edward Q. Dela Cruz"
+CREATOR_BRAND = "CodeDev by Edward"
+CREATOR_SITE = "https://myportfoliohub.online"
+MIN_DISK = 32 * 1024**3
+MIN_ALONGSIDE_FREE = 36 * 1024**3
+EFI_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+
+LANGUAGES = [
+    ("English (United States)", "en_US.UTF-8"),
+    ("English (United Kingdom)", "en_GB.UTF-8"),
+    ("Filipino (Philippines)", "fil_PH.UTF-8"),
+    ("Español", "es_ES.UTF-8"),
+    ("Français", "fr_FR.UTF-8"),
+    ("Deutsch", "de_DE.UTF-8"),
+    ("Italiano", "it_IT.UTF-8"),
+    ("Português (Brasil)", "pt_BR.UTF-8"),
+    ("日本語", "ja_JP.UTF-8"),
+    ("한국어", "ko_KR.UTF-8"),
+    ("简体中文", "zh_CN.UTF-8"),
+]
+
+KEYBOARDS = [
+    ("English (US)", "us"),
+    ("English (UK)", "gb"),
+    ("Filipino", "ph"),
+    ("Spanish", "es"),
+    ("French", "fr"),
+    ("German", "de"),
+    ("Italian", "it"),
+    ("Portuguese", "pt"),
+    ("Japanese", "jp"),
+    ("Korean", "kr"),
+]
+
+
+def run_text(args: list[str]) -> str:
+    try:
+        return subprocess.check_output(args, text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return ""
+
+
+def human_bytes(n: int) -> str:
+    value = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
+    return f"{n} B"
+
+
+def live_disk() -> str:
+    source = run_text(["findmnt", "-no", "SOURCE", "/run/live/medium"])
+    if not source:
+        source = run_text(["findmnt", "-no", "SOURCE", "/lib/live/mount/medium"])
+    if not source.startswith("/dev/"):
+        return ""
+    current = os.path.realpath(source)
+    for _ in range(6):
+        dtype = run_text(["lsblk", "-ndo", "TYPE", current])
+        if dtype == "disk":
+            return current
+        parent = run_text(["lsblk", "-ndo", "PKNAME", current])
+        if not parent:
+            return ""
+        current = f"/dev/{parent}"
+    return ""
+
+
+@dataclass
+class DiskInfo:
+    path: str
+    size: int
+    model: str
+    serial: str
+    removable: bool
+    pttype: str
+    windows_like: bool = False
+    esp_path: str = ""
+    largest_gap: int = 0
+    eligible: bool = True
+    reason: str = ""
+    partitions: list[dict] = field(default_factory=list)
+
+    @property
+    def alongside_ready(self) -> bool:
+        return (
+            self.eligible
+            and self.pttype == "gpt"
+            and self.windows_like
+            and bool(self.esp_path)
+            and self.largest_gap >= MIN_ALONGSIDE_FREE
+            and Path("/sys/firmware/efi").exists()
+        )
+
+
+def scan_disks() -> list[DiskInfo]:
+    live = os.path.realpath(live_disk()) if live_disk() else ""
+    cols = "PATH,NAME,TYPE,SIZE,MODEL,SERIAL,RO,RM,FSTYPE,LABEL,PARTLABEL,PARTTYPE,START,PKNAME,LOG-SEC,PTTYPE"
+    try:
+        raw = subprocess.check_output(["lsblk", "-J", "-b", "-o", cols], text=True)
+        data = json.loads(raw)
+    except Exception:
+        return []
+
+    results: list[DiskInfo] = []
+    for dev in data.get("blockdevices", []):
+        if dev.get("type") != "disk":
+            continue
+        path = dev.get("path") or ""
+        size = int(dev.get("size") or 0)
+        ro = bool(dev.get("ro"))
+        rm = bool(dev.get("rm"))
+        model = (dev.get("model") or "Unknown").strip()
+        serial = (dev.get("serial") or "Not reported").strip()
+        pttype = (dev.get("pttype") or "").lower()
+        info = DiskInfo(path, size, model, serial, rm, pttype)
+        if not path or path.startswith(("/dev/loop", "/dev/zram")):
+            info.eligible, info.reason = False, "Unsupported device"
+        elif live and os.path.realpath(path) == live:
+            info.eligible, info.reason = False, "Spectre live installer media"
+        elif ro:
+            info.eligible, info.reason = False, "Read-only disk"
+        elif size < MIN_DISK:
+            info.eligible, info.reason = False, "Smaller than 32 GiB"
+
+        parts = dev.get("children") or []
+        info.partitions = parts
+        sector = int(dev.get("log-sec") or 512)
+        intervals: list[tuple[int, int]] = []
+        ntfs = False
+        esp = ""
+        for part in parts:
+            if part.get("type") != "part":
+                continue
+            start = int(part.get("start") or 0) * sector
+            psize = int(part.get("size") or 0)
+            if psize:
+                intervals.append((start, min(size, start + psize)))
+            fstype = (part.get("fstype") or "").lower()
+            ptype = (part.get("parttype") or "").lower()
+            label = (part.get("label") or "").lower()
+            if fstype in {"ntfs", "ntfs3"} or "windows" in label:
+                ntfs = True
+            if ptype == EFI_GUID or ((fstype in {"vfat", "fat", "fat32"}) and "efi" in label):
+                esp = part.get("path") or esp
+
+        # Find the largest unallocated gap. Leave 4 MiB at each disk edge to
+        # avoid GPT metadata/alignment areas and count only meaningful gaps.
+        intervals.sort()
+        cursor = 4 * 1024**2
+        largest = 0
+        for start, end in intervals:
+            if start > cursor:
+                largest = max(largest, start - cursor)
+            cursor = max(cursor, end)
+        disk_end = max(cursor, size - 4 * 1024**2)
+        if size - 4 * 1024**2 > cursor:
+            largest = max(largest, size - 4 * 1024**2 - cursor)
+        info.largest_gap = max(0, largest)
+        info.windows_like = ntfs and bool(esp)
+        info.esp_path = esp
+        results.append(info)
+    return results
+
+
+def timezones() -> list[str]:
+    zones: list[str] = []
+    for filename in ("/usr/share/zoneinfo/zone1970.tab", "/usr/share/zoneinfo/zone.tab"):
+        try:
+            for line in Path(filename).read_text(errors="ignore").splitlines():
+                if not line or line.startswith("#"):
+                    continue
+                cols = line.split("\t")
+                if len(cols) >= 3:
+                    zones.append(cols[2])
+            if zones:
+                break
+        except OSError:
+            pass
+    zones.extend(["Etc/UTC", "Asia/Manila"])
+    return sorted(set(zones))
+
+
+class Installer(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        self.pages: list[Gtk.Widget] = []
+        self.step_labels: list[Gtk.Label] = []
+        self.page_index = 0
+        self.disks: list[DiskInfo] = []
+        self.selected_disk: DiskInfo | None = None
+        self.mode = "erase"
+        self.installing = False
+        self._backend: subprocess.Popen | None = None
+        self._slide_index = 0
+        self._slide_timer = 0
+        self._activity_timer = 0
+        self._install_started_at = 0.0
+        self._zone_selected = "Asia/Manila"
+        self._zone_clock_timer = 0
+        self._last_progress = 0
+        self._last_backend_error = ""
+
+    def do_activate(self):
+        if self.props.active_window:
+            self.props.active_window.present()
+            return
+        if not (Path("/run/live/medium/live/filesystem.squashfs").exists() or Path("/lib/live/mount/medium/live/filesystem.squashfs").exists()):
+            dialog = Adw.MessageDialog.new(None, "Installer unavailable", "Install Spectre OS can only run from the Spectre live USB or ISO session.")
+            dialog.add_response("close", "Close")
+            dialog.connect("response", lambda *_: self.quit())
+            dialog.present()
+            return
+
+        Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.DEFAULT)
+        self._install_css()
+        self.win = Adw.ApplicationWindow(application=self)
+        self.win.set_title("Spectre OS Installer")
+        # SPECTRE_INSTALL_ACTIVE_CLOSE_GUARD_V1
+        self.win.connect("close-request", self._on_close_request)
+        # SPECTRE_RESPONSIVE_INSTALLER_V1
+        self.win.set_resizable(True)
+        self.win.set_default_size(1000, 640)
+        self.win.set_size_request(760, 500)
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.win.set_content(root)
+        header = Adw.HeaderBar()
+        title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        if Path(ICON_PATH).exists():
+            icon = Gtk.Image.new_from_file(ICON_PATH)
+            icon.set_pixel_size(32)
+            title_box.append(icon)
+        title = Gtk.Label(label="Install Spectre OS")
+        title.add_css_class("title-3")
+        title_box.append(title)
+        header.set_title_widget(title_box)
+        about = Gtk.Button.new_from_icon_name("help-about-symbolic")
+        about.set_tooltip_text("About Spectre OS and its creator")
+        about.add_css_class("flat")
+        about.connect("clicked", self._about)
+        header.pack_end(about)
+        root.append(header)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        content.set_vexpand(True)
+        root.append(content)
+
+        sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
+        sidebar.set_size_request(220, -1)
+        sidebar.set_margin_top(26)
+        sidebar.set_margin_bottom(26)
+        sidebar.set_margin_start(22)
+        sidebar.set_margin_end(20)
+        sidebar.add_css_class("installer-sidebar")
+        content.append(sidebar)
+
+        self.stack = Gtk.Stack()
+        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.stack.set_transition_duration(180)
+        self.stack.set_hexpand(True)
+        self.stack.set_vexpand(True)
+        self.stack.set_hhomogeneous(False)
+        self.stack.set_vhomogeneous(False)
+
+        # SPECTRE_RESPONSIVE_INSTALLER_V1: only wizard content scrolls.
+        self.page_scroll = Gtk.ScrolledWindow()
+        self.page_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self.page_scroll.set_hexpand(True)
+        self.page_scroll.set_vexpand(True)
+        self.page_scroll.set_child(self.stack)
+        content.append(self.page_scroll)
+
+        names = ["Welcome", "Keyboard", "Installation", "Location", "Account", "Summary", "Installing"]
+        for i, name in enumerate(names):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            num = Gtk.Label(label=str(i + 1))
+            num.set_size_request(28, 28)
+            num.add_css_class("step-number")
+            label = Gtk.Label(label=name)
+            label.set_xalign(0)
+            row.append(num)
+            row.append(label)
+            sidebar.append(row)
+            self.step_labels.append(label)
+
+        self._build_pages()
+
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        footer.set_margin_start(24)
+        footer.set_margin_end(24)
+        footer.set_margin_top(12)
+        footer.set_margin_bottom(18)
+        root.append(footer)
+        self.back = Gtk.Button(label="Back")
+        self.back.connect("clicked", self._back)
+        footer.append(self.back)
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        footer.append(spacer)
+        self.status = Gtk.Label(label="")
+        self.status.add_css_class("dim-label")
+        footer.append(self.status)
+        self.next = Gtk.Button(label="Continue")
+        self.next.add_css_class("suggested-action")
+        self.next.connect("clicked", self._next)
+        footer.append(self.next)
+
+        self._refresh_disks()
+        self._sync_page()
+        self.win.present()
+
+    def _install_css(self):
+        css = b"""
+        .installer-sidebar { background: alpha(@window_bg_color, 0.52); border-right: 1px solid alpha(@accent_color,0.18); }
+        .step-number { border-radius: 999px; background: alpha(@accent_color,0.16); padding: 4px; font-weight: 700; }
+        .step-active { color: @accent_color; font-weight: 800; }
+        .installer-page { padding: 24px 28px; }
+        .hero-title { font-size: 32px; font-weight: 850; letter-spacing: -0.4px; }
+        .eyebrow { color: @accent_color; font-weight: 800; letter-spacing: 0.6px; }
+        .choice-card { border: 1px solid alpha(@accent_color,0.18); border-radius: 18px; padding: 14px; background: alpha(@card_bg_color,0.72); }
+        .disk-row { padding: 12px 14px; }
+        .summary-card { border-radius: 18px; padding: 18px; background: alpha(@card_bg_color,0.78); border: 1px solid alpha(@accent_color,0.12); }
+        .glass-card { border-radius: 20px; padding: 18px; background: alpha(@card_bg_color,0.76); border: 1px solid alpha(@accent_color,0.16); }
+        .hero-frame { border-radius: 22px; border: 1px solid alpha(@accent_color,0.34); background: alpha(@window_bg_color,0.7); padding: 2px; }
+        .brand-strip { border-radius: 14px; padding: 12px 14px; background: alpha(@accent_color,0.08); border: 1px solid alpha(@accent_color,0.14); }
+        .status-good { color: #52d68a; font-weight: 700; }
+        .status-warn { color: #ffb86c; font-weight: 700; }
+        .project-chip { border-radius: 999px; padding: 6px 10px; background: alpha(@accent_color,0.12); }
+        .slide-title { font-size: 22px; font-weight: 800; }
+        /* SPECTRE_INSTALLING_PAGE_POLISH_V1 */
+        .install-slideshow { border-radius: 16px; background: alpha(@card_bg_color,0.34); border: 1px solid alpha(@accent_color,0.12); padding: 8px; }
+        .install-log { border-radius: 12px; background: alpha(@window_bg_color,0.72); border: 1px solid alpha(@accent_color,0.12); padding: 7px 9px; font-family: monospace; font-size: 11px; }
+        .progress-status { font-weight: 800; font-size: 15px; }
+        .progress-card { border-radius: 16px; padding: 14px 16px; background: alpha(@card_bg_color,0.80); border: 1px solid alpha(@accent_color,0.20); }
+        .progress-card-title { font-weight: 800; font-size: 12px; color: @accent_color; }
+        .activity-progress { min-height: 3px; }
+        .elapsed-label { font-variant-numeric: tabular-nums; font-size: 12px; }
+        .install-safe-note { border-radius: 12px; padding: 8px 11px; background: alpha(@accent_color,0.07); border: 1px solid alpha(@accent_color,0.12); }
+        .finish-title { font-size: 26px; font-weight: 850; color: #52d68a; }
+        .danger-entry { border-color: #e66100; }
+        """
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css)
+        Gtk.StyleContext.add_provider_for_display(
+            Gtk.Widget.get_display(self.win) if hasattr(self, "win") else Gdk.Display.get_default(),
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        ) if False else None
+        # Gtk.ApplicationWindow does not exist yet when this method is called.
+        display = Gtk.Window.get_default_widget if False else None
+        from gi.repository import Gdk
+        GdkDisplay = Gdk.Display.get_default()
+        if GdkDisplay:
+            Gtk.StyleContext.add_provider_for_display(GdkDisplay, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def _about(self, *_):
+        dialog = Adw.MessageDialog.new(
+            self.win,
+            "About Spectre OS",
+            f"Spectre OS is created by {CREATOR_NAME}.\n\n{CREATOR_BRAND}\n{CREATOR_SITE}\n\nThe installer keeps creator and project information secondary to installation safety and clarity.",
+        )
+        dialog.add_response("close", "Close")
+        dialog.set_default_response("close")
+        dialog.present()
+
+    def _hero_visual(self, width: int = 430, height: int = 220) -> Gtk.Widget:
+        frame = Gtk.Frame()
+        frame.add_css_class("hero-frame")
+        overlay = Gtk.Overlay()
+        if Path(WALLPAPER_PATH).exists():
+            bg = Gtk.Picture.new_for_filename(WALLPAPER_PATH)
+            bg.set_content_fit(Gtk.ContentFit.COVER)
+            bg.set_size_request(width, height)
+            overlay.set_child(bg)
+        else:
+            fallback = Gtk.Box()
+            fallback.set_size_request(width, height)
+            overlay.set_child(fallback)
+        if Path(ICON_PATH).exists():
+            badge = Gtk.Picture.new_for_filename(ICON_PATH)
+            badge.set_content_fit(Gtk.ContentFit.CONTAIN)
+            badge.set_size_request(116, 116)
+            badge.set_halign(Gtk.Align.END)
+            badge.set_valign(Gtk.Align.END)
+            badge.set_margin_end(18)
+            badge.set_margin_bottom(16)
+            overlay.add_overlay(badge)
+        frame.set_child(overlay)
+        return frame
+
+    def _creator_strip(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        box.add_css_class("brand-strip")
+        if Path(SPECTRE_LOGO_PATH).exists():
+            icon = Gtk.Image.new_from_file(SPECTRE_LOGO_PATH)
+            icon.set_pixel_size(34)
+            box.append(icon)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        title = Gtk.Label(label=f"{CREATOR_BRAND} • {CREATOR_NAME}")
+        title.set_xalign(0); title.add_css_class("heading")
+        sub = Gtk.Label(label="Creator signature • official Spectre OS project")
+        sub.set_xalign(0); sub.add_css_class("dim-label")
+        text.append(title); text.append(sub); text.set_hexpand(True)
+        box.append(text)
+        link = Gtk.LinkButton.new_with_label(CREATOR_SITE, "myportfoliohub.online")
+        box.append(link)
+        return box
+
+    def _make_install_slide(self, image_path: str, title_text: str, body_text: str, *, creator: bool = False) -> Gtk.Widget:
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        card.add_css_class("glass-card")
+        card.set_margin_start(2); card.set_margin_end(2)
+        if Path(image_path).exists():
+            picture = Gtk.Picture.new_for_filename(image_path)
+            # SPECTRE_INSTALLING_PAGE_POLISH_V1: keep the complete artwork visible.
+            picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+            picture.set_can_shrink(True)
+            picture.set_size_request(620, 120)
+            card.append(picture)
+        title = Gtk.Label(label=title_text)
+        title.set_xalign(0); title.set_wrap(True); title.add_css_class("slide-title")
+        card.append(title)
+        body = Gtk.Label(label=body_text)
+        body.set_xalign(0); body.set_wrap(True); body.add_css_class("dim-label")
+        card.append(body)
+        if creator:
+            link = Gtk.LinkButton.new_with_label(CREATOR_SITE, "Visit myportfoliohub.online")
+            link.set_halign(Gtk.Align.START)
+            card.append(link)
+        return card
+
+    def _rotate_install_slide(self):
+        if not self.installing or not hasattr(self, "install_slide_stack"):
+            return GLib.SOURCE_REMOVE
+        names = self.install_slide_names
+        if names:
+            self._slide_index = (self._slide_index + 1) % len(names)
+            self.install_slide_stack.set_visible_child_name(names[self._slide_index])
+        return GLib.SOURCE_CONTINUE
+
+    def _password_strength_changed(self, editable):
+        value = editable.get_text()
+        score = 0
+        if len(value) >= 8: score += 1
+        if len(value) >= 12: score += 1
+        if re.search(r"[A-Z]", value) and re.search(r"[a-z]", value): score += 1
+        if re.search(r"[0-9]", value) and re.search(r"[^A-Za-z0-9]", value): score += 1
+        self.password_strength.set_value(score)
+        labels = ["Too short", "Basic", "Fair", "Good", "Strong"]
+        self.password_strength_label.set_text(labels[min(score, 4)])
+
+    def _update_detection_card(self):
+        if not hasattr(self, "detection_title"):
+            return
+        d = self.selected_disk
+        if not d:
+            self.detection_title.set_text("No target selected")
+            self.detection_detail.set_text("Select an eligible disk to see the installation safety assessment.")
+            self.detection_state.set_text("WAITING")
+            return
+        if not d.partitions:
+            self.detection_title.set_text("Empty disk detected")
+            self.detection_detail.set_text(f"{d.path} has no existing partitions. Erase-disk installation can use the full {human_bytes(d.size)} safely after confirmation.")
+            self.detection_state.set_text("READY")
+            self.detection_state.remove_css_class("status-warn"); self.detection_state.add_css_class("status-good")
+        elif d.windows_like:
+            self.detection_title.set_text("Windows-compatible layout detected")
+            if d.alongside_ready:
+                detail = f"EFI + NTFS layout found with {human_bytes(d.largest_gap)} unallocated. The privileged backend will verify Microsoft Boot Manager before any alongside write."
+                state = "ALONGSIDE READY"
+            else:
+                detail = "EFI + NTFS layout found, but safe alongside requirements are not all satisfied. Existing partitions remain untouched until final validation."
+                state = "REVIEW"
+            self.detection_detail.set_text(detail); self.detection_state.set_text(state)
+            self.detection_state.remove_css_class("status-good"); self.detection_state.add_css_class("status-warn" if not d.alongside_ready else "status-good")
+        else:
+            self.detection_title.set_text("Existing partitions detected")
+            self.detection_detail.set_text("Spectre found existing disk data but did not confirm a supported Windows alongside layout. Erase mode remains available; no changes occur until Summary confirmation.")
+            self.detection_state.set_text("REVIEW")
+            self.detection_state.remove_css_class("status-good"); self.detection_state.add_css_class("status-warn")
+
+    def _page_shell(self, title: str, subtitle: str) -> tuple[Gtk.Box, Gtk.Box]:
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        outer.add_css_class("installer-page")
+        head = Gtk.Label(label=title)
+        head.set_xalign(0)
+        head.add_css_class("hero-title")
+        outer.append(head)
+        sub = Gtk.Label(label=subtitle)
+        sub.set_xalign(0)
+        sub.set_wrap(True)
+        sub.add_css_class("dim-label")
+        outer.append(sub)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        body.set_margin_top(18)
+        body.set_vexpand(True)
+        outer.append(body)
+        return outer, body
+
+    def _build_pages(self):
+        # Welcome / language
+        p, body = self._page_shell("Welcome to Spectre OS", "A calm, guided installation experience built around clarity, disk safety and a verified first boot.")
+        eyebrow = Gtk.Label(label="SPECTRE INSTALLER • GUIDED MODE")
+        eyebrow.set_xalign(0); eyebrow.add_css_class("eyebrow")
+        body.append(eyebrow)
+        hero = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=24)
+        hero.append(self._hero_visual())
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        text.set_valign(Gtk.Align.CENTER)
+        h = Gtk.Label(label="Install with confidence")
+        h.set_xalign(0); h.add_css_class("title-2")
+        text.append(h)
+        for message in (
+            "✓ Live USB is automatically excluded from target disks",
+            "✓ Disk identity is rechecked immediately before writing",
+            "✓ UEFI/BIOS boot files and installed system are verified",
+        ):
+            label = Gtk.Label(label=message); label.set_xalign(0); label.set_wrap(True)
+            text.append(label)
+        hero.append(text)
+        body.append(hero)
+        self.language = Gtk.DropDown.new_from_strings([x[0] for x in LANGUAGES])
+        if hasattr(self.language, "set_enable_search"):
+            self.language.set_enable_search(True)
+        row = Adw.ActionRow(title="Language", subtitle="Language used by Spectre after installation")
+        row.add_suffix(self.language)
+        body.append(row)
+        body.append(self._creator_strip())
+        self._add_page("welcome", p)
+
+        # Keyboard
+        p, body = self._page_shell("Keyboard layout", "Choose the keyboard layout you want Spectre to use on the login screen and desktop.")
+        self.keyboard = Gtk.DropDown.new_from_strings([x[0] for x in KEYBOARDS])
+        row = Adw.ActionRow(title="Keyboard layout", subtitle="The layout can be changed later from GNOME Settings")
+        row.add_suffix(self.keyboard)
+        body.append(row)
+        test_row = Adw.ActionRow(title="Try your keyboard", subtitle="Type here to confirm letters, numbers and symbols feel correct")
+        self.keyboard_test = Gtk.Entry(); self.keyboard_test.set_placeholder_text("Type something…")
+        self.keyboard_test.set_width_chars(28)
+        test_row.add_suffix(self.keyboard_test)
+        body.append(test_row)
+        note = Gtk.Label(label="Tip: for most Philippine English keyboards, English (US) is the correct layout.")
+        note.set_wrap(True); note.set_xalign(0); note.add_css_class("dim-label")
+        body.append(note)
+        self._add_page("keyboard", p)
+
+        # Installation
+        p, body = self._page_shell("Installation type", "Choose the physical disk and how Spectre should use it. The live installer USB is never offered as a target.")
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.disk_summary = Gtk.Label(label="Scanning disks…")
+        self.disk_summary.set_xalign(0); self.disk_summary.set_hexpand(True)
+        bar.append(self.disk_summary)
+        rescan = Gtk.Button(label="Rescan")
+        rescan.connect("clicked", lambda *_: self._refresh_disks())
+        bar.append(rescan)
+        body.append(bar)
+        frame = Gtk.Frame()
+        self.disk_list = Gtk.ListBox()
+        self.disk_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        frame.set_child(self.disk_list)
+        body.append(frame)
+
+        detect = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        detect.add_css_class("glass-card")
+        detect_icon = Gtk.Image.new_from_icon_name("drive-harddisk-symbolic")
+        detect_icon.set_pixel_size(32); detect.append(detect_icon)
+        detect_text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3); detect_text.set_hexpand(True)
+        self.detection_title = Gtk.Label(label="Storage assessment"); self.detection_title.set_xalign(0); self.detection_title.add_css_class("heading")
+        self.detection_detail = Gtk.Label(label="Select a target to see what Spectre detected."); self.detection_detail.set_xalign(0); self.detection_detail.set_wrap(True); self.detection_detail.add_css_class("dim-label")
+        detect_text.append(self.detection_title); detect_text.append(self.detection_detail); detect.append(detect_text)
+        self.detection_state = Gtk.Label(label="WAITING"); self.detection_state.add_css_class("status-warn"); detect.append(self.detection_state)
+        body.append(detect)
+
+        modes = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        body.append(modes)
+        self.erase_mode = Gtk.CheckButton(label="Erase disk and install Spectre OS")
+        self.erase_mode.set_active(True)
+        self.erase_mode.connect("toggled", self._mode_changed, "erase")
+        erase_desc = Gtk.Label(label="Use the entire selected disk. All existing partitions and data on that disk will be erased.")
+        erase_desc.set_xalign(0); erase_desc.set_wrap(True); erase_desc.add_css_class("dim-label")
+        modes.append(self.erase_mode); modes.append(erase_desc)
+
+        self.along_mode = Gtk.CheckButton(label="Install Spectre OS alongside Windows")
+        self.along_mode.set_group(self.erase_mode)
+        self.along_mode.connect("toggled", self._mode_changed, "alongside")
+        self.along_desc = Gtk.Label(label="Spectre uses existing unallocated space and keeps the Windows partitions and EFI boot files intact.")
+        self.along_desc.set_xalign(0); self.along_desc.set_wrap(True); self.along_desc.add_css_class("dim-label")
+        modes.append(self.along_mode); modes.append(self.along_desc)
+
+        self.swap_switch = Adw.SwitchRow(title="Create a swap file", subtitle="Recommended for suspend pressure and memory spikes. Spectre creates a 2 GiB swap file.")
+        self.swap_switch.set_active(True)
+        body.append(self.swap_switch)
+        self._add_page("installation", p)
+
+        # Location
+        p, body = self._page_shell("Where are you?", "Your location sets the clock, time zone, calendar and daylight-saving rules.")
+        location_visual = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=18)
+        if Path(WALLPAPER_PATH).exists():
+            lp = Gtk.Picture.new_for_filename(WALLPAPER_PATH); lp.set_content_fit(Gtk.ContentFit.COVER); lp.set_size_request(300, 150); location_visual.append(lp)
+        location_copy = Gtk.Label(label="Spectre uses the standard IANA time-zone database. Choose the city/region closest to you so clock, calendar and daylight-saving rules are correct from first boot.")
+        location_copy.set_xalign(0); location_copy.set_wrap(True); location_copy.set_valign(Gtk.Align.CENTER); location_copy.set_hexpand(True)
+        location_visual.append(location_copy); body.append(location_visual)
+        # A normal Gtk.DropDown search is type-ahead, not a true substring
+        # filter. That made typing "manila" leave the Africa entries on screen.
+        # RC4.2 uses an inline search/results experience instead: no trapping
+        # popup, real city/region filtering, quick choices, and a live clock.
+        self.zone_values = timezones()
+        current = run_text(["timedatectl", "show", "-p", "Timezone", "--value"]) or "Asia/Manila"
+        self._zone_selected = current if current in self.zone_values else "Asia/Manila"
+
+        zone_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        zone_card.add_css_class("glass-card")
+        selected_line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        selected_copy = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        selected_copy.set_hexpand(True)
+        self.zone_selected_title = Gtk.Label(label=self._zone_selected.replace("_", " "))
+        self.zone_selected_title.set_xalign(0); self.zone_selected_title.add_css_class("heading")
+        self.zone_selected_subtitle = Gtk.Label(label="Selected time zone")
+        self.zone_selected_subtitle.set_xalign(0); self.zone_selected_subtitle.add_css_class("dim-label")
+        selected_copy.append(self.zone_selected_title); selected_copy.append(self.zone_selected_subtitle)
+        selected_line.append(selected_copy)
+        self.zone_clock = Gtk.Label(label="")
+        self.zone_clock.add_css_class("title-3")
+        selected_line.append(self.zone_clock)
+        zone_card.append(selected_line)
+
+        quick_title = Gtk.Label(label="Quick choices")
+        quick_title.set_xalign(0); quick_title.add_css_class("dim-label")
+        zone_card.append(quick_title)
+        quick = Gtk.FlowBox()
+        quick.set_selection_mode(Gtk.SelectionMode.NONE)
+        quick.set_max_children_per_line(6); quick.set_row_spacing(6); quick.set_column_spacing(6)
+        for label, zone_name in [
+            ("Manila", "Asia/Manila"), ("Singapore", "Asia/Singapore"),
+            ("Tokyo", "Asia/Tokyo"), ("UTC", "Etc/UTC"),
+            ("London", "Europe/London"), ("New York", "America/New_York"),
+        ]:
+            button = Gtk.Button(label=label)
+            button.add_css_class("pill")
+            button.connect("clicked", lambda _b, z=zone_name: self._select_zone(z))
+            quick.insert(button, -1)
+        zone_card.append(quick)
+        body.append(zone_card)
+
+        search_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.zone_search = Gtk.SearchEntry()
+        self.zone_search.set_placeholder_text("Search city or region — e.g. Manila, Tokyo, New York")
+        self.zone_search.connect("search-changed", self._zone_search_changed)
+        self.zone_search.connect("stop-search", lambda *_: self.zone_search.set_text(""))
+        search_box.append(self.zone_search)
+        self.zone_results = Gtk.ListBox()
+        self.zone_results.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.zone_results.add_css_class("boxed-list")
+        self.zone_results.set_visible(False)
+        self.zone_results.connect("row-activated", self._zone_row_activated)
+        search_box.append(self.zone_results)
+        body.append(search_box)
+
+        loc_note = Gtk.Label(label="Search is local and instant; no network lookup is used. Press Esc in the search field to clear results. Spectre uses the standard IANA time-zone database included in the live system.")
+        loc_note.set_wrap(True); loc_note.set_xalign(0); loc_note.add_css_class("dim-label")
+        body.append(loc_note)
+        self._refresh_zone_clock()
+        self._zone_clock_timer = GLib.timeout_add_seconds(1, self._refresh_zone_clock)
+        self._add_page("location", p)
+
+        # Account
+        p, body = self._page_shell("Who are you?", "Create the account you will use to sign in to Spectre OS.")
+        grid = Gtk.Grid(column_spacing=14, row_spacing=12)
+        body.append(grid)
+        self.fullname = Gtk.Entry(); self.fullname.set_placeholder_text("Your name")
+        self.username = Gtk.Entry(); self.username.set_placeholder_text("username")
+        self.hostname = Gtk.Entry(); self.hostname.set_text("spectre-pc")
+        self.password = Gtk.PasswordEntry(); self.password.set_show_peek_icon(True)
+        self.password2 = Gtk.PasswordEntry(); self.password2.set_show_peek_icon(True)
+        fields = [
+            ("Your name", self.fullname), ("Username", self.username), ("Computer name", self.hostname),
+            ("Password", self.password), ("Confirm password", self.password2),
+        ]
+        for r, (name, widget) in enumerate(fields):
+            lab = Gtk.Label(label=name); lab.set_xalign(0)
+            grid.attach(lab, 0, r, 1, 1); grid.attach(widget, 1, r, 1, 1)
+        grid.set_column_homogeneous(False)
+        self.password_strength = Gtk.LevelBar(); self.password_strength.set_min_value(0); self.password_strength.set_max_value(4); self.password_strength.set_value(0)
+        self.password_strength_label = Gtk.Label(label="Too short"); self.password_strength_label.set_xalign(0); self.password_strength_label.add_css_class("dim-label")
+        strength_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        strength_box.append(self.password_strength); strength_box.append(self.password_strength_label)
+        body.append(strength_box)
+        self.password.connect("changed", self._password_strength_changed)
+        privacy = Gtk.Label(label="Your account details stay on this computer. The installer does not upload your name, password, disk information or installation plan.")
+        privacy.set_wrap(True); privacy.set_xalign(0); privacy.add_css_class("dim-label")
+        body.append(privacy)
+        self._add_page("account", p)
+
+        # Summary
+        p, body = self._page_shell("Ready to install", "Review the plan carefully. Spectre will verify the selected disk again before making any destructive change.")
+        self.summary = Gtk.Label(label="")
+        self.summary.set_xalign(0); self.summary.set_wrap(True); self.summary.set_selectable(True)
+        self.summary.add_css_class("summary-card")
+        body.append(self.summary)
+        safety = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12); safety.add_css_class("brand-strip")
+        shield = Gtk.Image.new_from_icon_name("security-high-symbolic"); shield.set_pixel_size(28); safety.append(shield)
+        safety_text = Gtk.Label(label="Final safety gate: the backend will re-read the disk size/serial, exclude the live media again, and stop if the reviewed target no longer matches.")
+        safety_text.set_wrap(True); safety_text.set_xalign(0); safety_text.set_hexpand(True); safety.append(safety_text)
+        body.append(safety)
+        self.confirm_label = Gtk.Label(label="")
+        self.confirm_label.set_xalign(0); self.confirm_label.set_wrap(True)
+        body.append(self.confirm_label)
+        self.confirm = Gtk.Entry()
+        self.confirm.set_placeholder_text("Type the safety word")
+        self.confirm.add_css_class("danger-entry")
+        self.confirm.connect("changed", self._update_install_confirmation)
+        body.append(self.confirm)
+        self.confirm_ack = Gtk.CheckButton(label="I understand the installation can modify or erase data on the selected disk.")
+        self.confirm_ack.connect("toggled", self._update_install_confirmation)
+        body.append(self.confirm_ack)
+        self.confirm_state = Gtk.Label(label="")
+        self.confirm_state.set_xalign(0); self.confirm_state.set_wrap(True); self.confirm_state.add_css_class("dim-label")
+        body.append(self.confirm_state)
+        warning = Gtk.Label(label="Back up important files before continuing. Erase mode destroys all data on the selected disk. Alongside mode never formats the Windows EFI partition, but any partitioning operation still deserves a current backup.")
+        warning.set_wrap(True); warning.set_xalign(0); warning.add_css_class("dim-label")
+        body.append(warning)
+        self._add_page("summary", p)
+
+        # Progress / finish — RC5.6 keeps true backend percentage visible at
+        # the top at all times and adds a separate live activity pulse. Long
+        # operations (filesystem copy/initramfs/GRUB) therefore never look frozen
+        # even when the next trustworthy percentage checkpoint has not arrived.
+        p, body = self._page_shell("Installing Spectre OS", "Spectre is copying the system, configuring your account and bootloader, then verifying the installed result.")
+
+        progress_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        progress_card.add_css_class("progress-card")
+
+        progress_heading = Gtk.Label(label="INSTALLATION PROGRESS")
+        progress_heading.set_xalign(0)
+        progress_heading.add_css_class("progress-card-title")
+        progress_card.append(progress_heading)
+
+        status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.install_spinner = Gtk.Spinner()
+        status_row.append(self.install_spinner)
+        self.progress_text = Gtk.Label(label="Waiting to start…")
+        self.progress_text.set_xalign(0)
+        self.progress_text.set_wrap(True)
+        self.progress_text.set_hexpand(True)
+        self.progress_text.add_css_class("progress-status")
+        status_row.append(self.progress_text)
+        self.elapsed_label = Gtk.Label(label="Elapsed 00:00")
+        self.elapsed_label.add_css_class("dim-label")
+        self.elapsed_label.add_css_class("elapsed-label")
+        status_row.append(self.elapsed_label)
+        progress_card.append(status_row)
+
+        self.progress = Gtk.ProgressBar()
+        self.progress.set_show_text(True)
+        self.progress.set_hexpand(True)
+        self.progress.set_fraction(0.0)
+        self.progress.set_text("0%")
+        progress_card.append(self.progress)
+
+        self.activity_progress = Gtk.ProgressBar()
+        self.activity_progress.set_hexpand(True)
+        self.activity_progress.set_pulse_step(0.08)
+        self.activity_progress.add_css_class("activity-progress")
+        progress_card.append(self.activity_progress)
+        body.append(progress_card)
+
+        safe_note = Gtk.Label(label="Keep this computer powered on and do not remove the installation media while Spectre is writing to disk.")
+        safe_note.set_xalign(0)
+        safe_note.set_wrap(True)
+        safe_note.add_css_class("dim-label")
+        safe_note.add_css_class("install-safe-note")
+        body.append(safe_note)
+
+        self.install_slide_stack = Gtk.Stack()
+        self.install_slide_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.install_slide_stack.set_transition_duration(500)
+        self.install_slide_stack.set_hexpand(True)
+        self.install_slide_stack.set_size_request(-1, 205)
+        self.install_slide_stack.add_css_class("install-slideshow")
+        slides = [
+            ("desktop", self._make_install_slide(WALLPAPER_PATH, "A desktop that feels like Spectre", "The polished GNOME desktop, smart taskbar, Spectre Insight and system controls are installed as one coherent experience.")),
+            ("creator", self._make_install_slide(SPECTRE_LOGO_PATH, CREATOR_BRAND, f"Spectre OS is created by {CREATOR_NAME}. Explore the creator portfolio, documentation and future releases from the official project site.", creator=True)),
+            ("projects", self._make_install_slide(ICON_PATH, "More from CodeDev by Edward", "Explore the creator portfolio and other CodeDev projects from the official site. Selected applications are intentionally not bundled into Spectre until the OS installation path is fully qualified.", creator=True)),
+            ("daily", self._make_install_slide(WALLPAPER_PATH, "Built toward daily use", "Networking, firmware, graphical login, UEFI/BIOS boot paths and installed-system health checks are being qualified before the final ISO release.")),
+        ]
+        self.install_slide_names = []
+        for name, widget in slides:
+            self.install_slide_stack.add_named(widget, name)
+            self.install_slide_names.append(name)
+        self.finish_slide = self._make_install_slide(SPECTRE_LOGO_PATH, "Installation complete", f"Spectre OS is installed and verified. Remove the USB/ISO before the next boot.\n\n{CREATOR_BRAND} • {CREATOR_NAME}", creator=True)
+        self.finish_slide.add_css_class("glass-card")
+        self.install_slide_stack.add_named(self.finish_slide, "finish")
+        self.failure_slide = self._make_install_slide(ICON_PATH, "Installation paused safely", "Spectre stopped before declaring the target bootable. The exact failing stage is shown below and a diagnostic log is saved to Downloads.")
+        self.failure_slide.add_css_class("glass-card")
+        self.install_slide_stack.add_named(self.failure_slide, "failure")
+        self.install_slide_stack.set_visible_child_name("desktop")
+        body.append(self.install_slide_stack)
+
+        log_title = Gtk.Label(label="Live installation log")
+        log_title.set_xalign(0)
+        log_title.add_css_class("dim-label")
+        body.append(log_title)
+        self.progress_log = Gtk.TextView()
+        self.progress_log.set_editable(False)
+        self.progress_log.set_cursor_visible(False)
+        self.progress_log.set_monospace(True)
+        self.progress_log.set_vexpand(True)
+        self.progress_log.add_css_class("install-log")
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_vexpand(True)
+        scroll.set_min_content_height(90)
+        scroll.set_child(self.progress_log)
+        body.append(scroll)
+
+        self.finish_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.finish_box.set_halign(Gtk.Align.END)
+        self.finish_box.set_visible(False)
+        restart = Gtk.Button(label="Restart now")
+        restart.add_css_class("suggested-action")
+        restart.connect("clicked", lambda *_: subprocess.Popen(["systemctl", "reboot"]))
+        stay = Gtk.Button(label="Continue testing")
+        stay.connect("clicked", lambda *_: self.win.close())
+        self.finish_box.append(stay)
+        self.finish_box.append(restart)
+        body.append(self.finish_box)
+        self._add_page("progress", p)
+
+    def _add_page(self, name: str, page: Gtk.Widget):
+        self.pages.append(page)
+        self.stack.add_named(page, name)
+
+    def _refresh_disks(self):
+        self.disks = scan_disks()
+        while child := self.disk_list.get_first_child():
+            self.disk_list.remove(child)
+        self.disk_buttons = {}
+        eligible = [d for d in self.disks if d.eligible]
+        self.disk_summary.set_text(f"{len(eligible)} eligible installation disk(s) detected")
+        first = None
+        for d in self.disks:
+            row = Gtk.ListBoxRow(); box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12); box.add_css_class("disk-row")
+            radio = Gtk.CheckButton()
+            if first is None and d.eligible:
+                first = radio
+            elif first is not None:
+                radio.set_group(first)
+            radio.set_sensitive(d.eligible)
+            radio.connect("toggled", self._disk_changed, d.path)
+            box.append(radio)
+            info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3); info.set_hexpand(True)
+            title = Gtk.Label(label=f"{d.path} — {human_bytes(d.size)} — {d.model}"); title.set_xalign(0)
+            subparts = ["Removable" if d.removable else "Internal", f"Serial: {d.serial}"]
+            if d.windows_like: subparts.append("Windows/NTFS detected")
+            if d.largest_gap: subparts.append(f"Unallocated: {human_bytes(d.largest_gap)}")
+            if not d.eligible: subparts.append(d.reason)
+            sub = Gtk.Label(label=" • ".join(subparts)); sub.set_xalign(0); sub.add_css_class("dim-label"); sub.set_wrap(True)
+            info.append(title); info.append(sub); box.append(info); row.set_child(box); self.disk_list.append(row)
+            self.disk_buttons[d.path] = radio
+        if eligible:
+            selected = self.selected_disk.path if self.selected_disk and any(d.path == self.selected_disk.path and d.eligible for d in self.disks) else eligible[0].path
+            self.disk_buttons[selected].set_active(True)
+        else:
+            self.selected_disk = None
+            self._update_mode_availability()
+        self._update_detection_card()
+
+    def _disk_changed(self, button: Gtk.CheckButton, path: str):
+        if not button.get_active(): return
+        self.selected_disk = next((d for d in self.disks if d.path == path), None)
+        self._update_mode_availability()
+        self._update_detection_card()
+
+    def _update_mode_availability(self):
+        d = self.selected_disk
+        ready = bool(d and d.alongside_ready)
+        self.along_mode.set_sensitive(ready)
+        if d and d.windows_like and not ready:
+            reasons = []
+            if not Path("/sys/firmware/efi").exists(): reasons.append("boot the installer in UEFI mode")
+            if d.pttype != "gpt": reasons.append("Windows disk is not GPT")
+            if d.largest_gap < MIN_ALONGSIDE_FREE: reasons.append("at least 36 GiB unallocated space is required")
+            self.along_desc.set_text("Windows was detected, but safe automatic alongside installation is unavailable: " + "; ".join(reasons) + ". Shrink Windows from Windows Disk Management first, then rescan.")
+        elif ready:
+            self.along_desc.set_text(f"Windows detected. Spectre can use {human_bytes(d.largest_gap)} of existing unallocated space without formatting the Windows partitions or EFI partition.")
+        else:
+            self.along_desc.set_text("Available only when a UEFI/GPT Windows installation and at least 36 GiB of unallocated space are detected.")
+        if not ready and self.along_mode.get_active():
+            self.erase_mode.set_active(True)
+        self._update_detection_card()
+
+    def _mode_changed(self, button: Gtk.CheckButton, mode: str):
+        if button.get_active(): self.mode = mode
+
+    def _selected_language(self) -> str:
+        return LANGUAGES[min(self.language.get_selected(), len(LANGUAGES)-1)][1]
+
+    def _selected_keyboard(self) -> str:
+        return KEYBOARDS[min(self.keyboard.get_selected(), len(KEYBOARDS)-1)][1]
+
+    def _selected_zone(self) -> str:
+        return self._zone_selected if self._zone_selected in self.zone_values else "Etc/UTC"
+
+    def _select_zone(self, zone_name: str):
+        if zone_name not in self.zone_values:
+            return
+        self._zone_selected = zone_name
+        self.zone_selected_title.set_text(zone_name.replace("_", " "))
+        self.zone_selected_subtitle.set_text("Selected time zone • saved to the installed system")
+        if hasattr(self, "zone_search"):
+            self.zone_search.set_text("")
+        self._refresh_zone_clock()
+
+    def _refresh_zone_clock(self):
+        try:
+            now = datetime.now(ZoneInfo(self._selected_zone()))
+            self.zone_clock.set_text(now.strftime("%a %H:%M"))
+        except (ZoneInfoNotFoundError, ValueError):
+            self.zone_clock.set_text("")
+        return GLib.SOURCE_CONTINUE
+
+    def _zone_search_changed(self, entry: Gtk.SearchEntry):
+        query = entry.get_text().strip().casefold().replace("_", " ")
+        child = self.zone_results.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self.zone_results.remove(child)
+            child = nxt
+
+        if not query:
+            self.zone_results.set_visible(False)
+            return
+
+        words = [w for w in query.split() if w]
+        matches = []
+        for zone_name in self.zone_values:
+            hay = zone_name.casefold().replace("_", " ").replace("/", " ")
+            if all(word in hay for word in words):
+                score = 0
+                city = zone_name.rsplit("/", 1)[-1].casefold().replace("_", " ")
+                if city == query: score += 100
+                if city.startswith(query): score += 60
+                if hay.startswith(query): score += 30
+                matches.append((-score, zone_name))
+        matches.sort(key=lambda item: (item[0], item[1]))
+
+        for _score, zone_name in matches[:12]:
+            row = Gtk.ListBoxRow()
+            row._spectre_zone = zone_name
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            box.set_margin_top(8); box.set_margin_bottom(8); box.set_margin_start(12); box.set_margin_end(12)
+            icon = Gtk.Image.new_from_icon_name("preferences-system-time-symbolic")
+            box.append(icon)
+            labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1); labels.set_hexpand(True)
+            city = zone_name.rsplit("/", 1)[-1].replace("_", " ")
+            primary = Gtk.Label(label=city); primary.set_xalign(0)
+            secondary = Gtk.Label(label=zone_name.replace("_", " ")); secondary.set_xalign(0); secondary.add_css_class("dim-label")
+            labels.append(primary); labels.append(secondary); box.append(labels)
+            row.set_child(box)
+            self.zone_results.append(row)
+        self.zone_results.set_visible(bool(matches))
+
+    def _zone_row_activated(self, _listbox: Gtk.ListBox, row: Gtk.ListBoxRow):
+        zone_name = getattr(row, "_spectre_zone", None)
+        if zone_name:
+            self._select_zone(zone_name)
+
+    def _validate_current(self) -> bool:
+        if self.page_index == 2:
+            if not self.selected_disk:
+                self._message("No installation disk", "No eligible target disk was selected.")
+                return False
+            if self.mode == "alongside" and not self.selected_disk.alongside_ready:
+                self._message("Alongside installation is not ready", "Spectre only enables alongside mode when Windows is detected on a GPT disk, the installer is booted in UEFI mode, and at least 36 GiB of unallocated space already exists.")
+                return False
+        elif self.page_index == 4:
+            full = self.fullname.get_text().strip()
+            user = self.username.get_text().strip().lower()
+            host = self.hostname.get_text().strip().lower()
+            p1, p2 = self.password.get_text(), self.password2.get_text()
+            if not full:
+                self._message("Your name is required", "Enter the name to display for your account."); return False
+            if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,30}", user) or user == "root":
+                self._message("Invalid username", "Use lowercase letters, numbers, _ or -, up to 31 characters. 'root' is reserved."); return False
+            if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", host):
+                self._message("Invalid computer name", "Use letters, numbers and hyphens without starting or ending with a hyphen."); return False
+            if len(p1) < 8:
+                self._message("Password too short", "Use at least 8 characters."); return False
+            if p1 != p2:
+                self._message("Passwords do not match", "Retype the same password in both fields."); return False
+            self.username.set_text(user); self.hostname.set_text(host)
+        return True
+
+    def _prepare_summary(self):
+        d = self.selected_disk
+        if not d: return
+        mode_text = "Erase the entire disk" if self.mode == "erase" else "Install alongside Windows using unallocated space"
+        extra = ""
+        if self.mode == "alongside": extra = f"\nSafe unallocated space detected: {human_bytes(d.largest_gap)}\nExisting EFI partition: {d.esp_path} (will NOT be formatted)"
+        self.summary.set_text(
+            f"Installation type: {mode_text}\nTarget disk: {d.path}\nSize: {human_bytes(d.size)}\nModel: {d.model}\nSerial: {d.serial}{extra}\n\n"
+            f"Language: {self._selected_language()}\nKeyboard: {self._selected_keyboard()}\nTime zone: {self._selected_zone()}\n"
+            f"Account: {self.username.get_text()}\nComputer name: {self.hostname.get_text()}\nSwap file: {'Yes (2 GiB)' if self.swap_switch.get_active() else 'No'}\n"
+            f"Installer boot mode: {'UEFI' if Path('/sys/firmware/efi').exists() else 'Legacy BIOS'}"
+        )
+        word = "ERASE" if self.mode == "erase" else "INSTALL"
+        action = "permanently erase the selected disk" if self.mode == "erase" else "modify partitioning and install Spectre alongside the existing OS"
+        self.confirm_label.set_markup(
+            f"Final confirmation: type <b>{word}</b> to {GLib.markup_escape_text(action)} on <b>{GLib.markup_escape_text(d.path)}</b>."
+        )
+        self.confirm.set_text("")
+        self.confirm_ack.set_active(False)
+        self.confirm_ack.set_label(
+            "I understand all data on the selected disk will be permanently erased."
+            if self.mode == "erase"
+            else "I understand Spectre will change this disk's partition layout and I have a current backup."
+        )
+        self.expected_confirmation = word
+        self._update_install_confirmation()
+
+    def _normalized_confirmation(self) -> str:
+        return self.confirm.get_text().strip().upper()
+
+    def _confirmation_ready(self) -> bool:
+        return self.confirm_ack.get_active() and self._normalized_confirmation() == self.expected_confirmation
+
+    def _update_install_confirmation(self, *_):
+        if not hasattr(self, "next") or not hasattr(self, "confirm_state"):
+            return
+        if self.page_index != 5:
+            return
+        typed_ok = self._normalized_confirmation() == getattr(self, "expected_confirmation", "")
+        acknowledged = self.confirm_ack.get_active()
+        ready = typed_ok and acknowledged
+        self.next.set_sensitive(ready and not self.installing)
+        if ready:
+            self.confirm_state.set_text("Ready. Spectre will re-check the target disk once more before writing anything.")
+        elif not typed_ok:
+            self.confirm_state.set_text(f"Type {getattr(self, 'expected_confirmation', 'the safety word')} above. Spaces and letter case are ignored.")
+        else:
+            self.confirm_state.set_text("Tick the acknowledgement box to enable Install.")
+
+    def _next(self, *_):
+        if self.installing: return
+        if not self._validate_current(): return
+        if self.page_index == 5:
+            if not self._confirmation_ready():
+                self._update_install_confirmation()
+                return
+            self._start_install()
+            return
+        if self.page_index < 5:
+            self.page_index += 1
+            if self.page_index == 5: self._prepare_summary()
+            self._sync_page()
+
+    def _back(self, *_):
+        if self.installing or self.page_index == 0: return
+        self.page_index -= 1
+        self._sync_page()
+
+    def _sync_page(self):
+        self.stack.set_visible_child(self.pages[self.page_index])
+        for i, label in enumerate(self.step_labels):
+            if i == self.page_index: label.add_css_class("step-active")
+            else: label.remove_css_class("step-active")
+        self.back.set_sensitive(self.page_index > 0 and self.page_index < 6 and not self.installing)
+        self.next.set_visible(self.page_index < 6)
+        self.next.set_label("Install" if self.page_index == 5 else "Continue")
+        self.next.set_sensitive(not self.installing)
+        if self.page_index == 5:
+            self._update_install_confirmation()
+        self.status.set_text("No disk changes have been made" if self.page_index < 6 else "")
+
+    def _plan(self) -> dict:
+        assert self.selected_disk
+        return {
+            "mode": self.mode,
+            "disk": self.selected_disk.path,
+            "expected_size": self.selected_disk.size,
+            "expected_serial": "" if self.selected_disk.serial == "Not reported" else self.selected_disk.serial,
+            "full_name": self.fullname.get_text().strip(),
+            "username": self.username.get_text().strip(),
+            "hostname": self.hostname.get_text().strip(),
+            "password": self.password.get_text(),
+            "timezone": self._selected_zone(),
+            "locale": self._selected_language(),
+            "keyboard": self._selected_keyboard(),
+            "swap": bool(self.swap_switch.get_active()),
+            "confirmation": self._normalized_confirmation(),
+            "acknowledged": bool(self.confirm_ack.get_active()),
+        }
+
+    def _on_close_request(self, *_args):
+        if not self.installing:
+            return False
+        self._message(
+            "Installation in progress",
+            "Spectre OS is currently writing and verifying the target disk. "
+            "The installer window cannot be closed until this operation finishes.",
+        )
+        return True
+
+    def _start_install(self):
+        self.installing = True
+        self.page_index = 6
+        self._sync_page()
+        self.back.set_sensitive(False); self.next.set_visible(False)
+        self._last_progress = 0
+        self._last_backend_error = ""
+        self.progress.set_fraction(0.0); self.progress.set_text("0%")
+        self.progress_text.set_text("Starting the privileged installer…")
+        self.elapsed_label.set_text("Elapsed 00:00")
+        self._install_started_at = time.monotonic()
+        self.install_spinner.start()
+        if self._activity_timer:
+            GLib.source_remove(self._activity_timer)
+        self._activity_timer = GLib.timeout_add(120, self._activity_tick)
+        plan = self._plan()
+        self.password.set_text(""); self.password2.set_text("")
+        self._slide_index = 0
+        self.install_slide_stack.set_visible_child_name(self.install_slide_names[0])
+        if self._slide_timer:
+            GLib.source_remove(self._slide_timer)
+        self._slide_timer = GLib.timeout_add_seconds(6, self._rotate_install_slide)
+
+        def worker():
+            try:
+                proc = subprocess.Popen(
+                    ["pkexec", "/usr/local/sbin/spectre-installer-backend", "--install-json"],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1,
+                )
+                self._backend = proc
+                assert proc.stdin and proc.stdout
+                proc.stdin.write(json.dumps(plan)); proc.stdin.close()
+                for line in proc.stdout:
+                    line = line.rstrip("\n")
+                    if line.startswith("PROGRESS|"):
+                        _, pct, msg = line.split("|", 2)
+                        GLib.idle_add(self._progress_update, int(pct), msg)
+                    elif line.startswith("ERROR|"):
+                        GLib.idle_add(self._backend_error, line[6:])
+                    elif line.startswith("LOG|"):
+                        GLib.idle_add(self._append_log, line[4:])
+                    elif line.startswith("DONE|"):
+                        GLib.idle_add(self._append_log, line[5:])
+                    else:
+                        GLib.idle_add(self._append_log, line)
+                rc = proc.wait()
+                GLib.idle_add(self._install_finished, rc)
+            except Exception as exc:
+                GLib.idle_add(self._append_log, f"Installer launcher error: {exc}")
+                GLib.idle_add(self._install_finished, 1)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _activity_tick(self):
+        if not self.installing:
+            self._activity_timer = 0
+            return GLib.SOURCE_REMOVE
+        # This is intentionally separate from the trustworthy percentage bar:
+        # pulse means the installer process is still running, not that a fake
+        # amount of disk work has completed.
+        self.activity_progress.pulse()
+        elapsed = max(0, int(time.monotonic() - self._install_started_at))
+        minutes, seconds = divmod(elapsed, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            self.elapsed_label.set_text(f"Elapsed {hours:d}:{minutes:02d}:{seconds:02d}")
+        else:
+            self.elapsed_label.set_text(f"Elapsed {minutes:02d}:{seconds:02d}")
+        return GLib.SOURCE_CONTINUE
+
+    def _progress_update(self, pct: int, msg: str):
+        self._last_progress = max(0, min(100, pct))
+        self.progress.set_fraction(self._last_progress / 100)
+        self.progress.set_text(f"{self._last_progress}%")
+        self.progress_text.set_text(msg)
+        self._append_log(f"[{self._last_progress:3d}%] {msg}")
+        return False
+
+    def _backend_error(self, text: str):
+        self._last_backend_error = text.strip()
+        self._append_log(f"ERROR: {self._last_backend_error}")
+        return False
+
+    def _append_log(self, text: str):
+        buf = self.progress_log.get_buffer()
+        end = buf.get_end_iter()
+        buf.insert(end, text + "\n")
+        end = buf.get_end_iter()
+        self.progress_log.scroll_to_iter(end, 0.0, False, 0.0, 1.0)
+        return False
+
+    def _install_finished(self, rc: int):
+        self.installing = False
+        self.install_spinner.stop()
+        if self._activity_timer:
+            GLib.source_remove(self._activity_timer); self._activity_timer = 0
+        if self._slide_timer:
+            GLib.source_remove(self._slide_timer); self._slide_timer = 0
+        if rc == 0:
+            self.activity_progress.set_fraction(1.0)
+            self.progress.set_fraction(1.0); self.progress.set_text("100%")
+            self.progress_text.set_text("Spectre OS was installed and verified. Remove the installation USB/ISO before the next boot.")
+            self.install_slide_stack.set_visible_child_name("finish")
+            self.finish_box.set_visible(True)
+        else:
+            self.activity_progress.set_fraction(0.0)
+            self.progress.set_text(f"Stopped at {self._last_progress}%")
+            self.install_slide_stack.set_visible_child_name("failure")
+            detail = self._last_backend_error or "The backend stopped before a verified installation was reported."
+            self.progress_text.set_text(f"Installation paused safely — {detail}")
+            self._message("Installation stopped", f"{detail}\n\nNo further disk operations will be performed. A detailed failure log is saved in Downloads when possible.")
+        return False
+
+    def _message(self, title: str, body: str):
+        dialog = Adw.MessageDialog.new(self.win, title, body)
+        dialog.add_response("ok", "OK"); dialog.set_default_response("ok")
+        dialog.present()
+
+
+def main():
+    return Installer().run(None)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

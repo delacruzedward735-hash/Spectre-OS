@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -u
+fail=0
+ok(){ printf '[OK] %s\n' "$*"; }
+warn(){ printf '[WARN] %s\n' "$*"; }
+check_path(){ [[ -e "$1" ]] && ok "$1" || { warn "$1 missing"; fail=$((fail+1)); }; }
+
+echo 'Spectre OS boot health check'
+printf 'Kernel: %s\n' "$(uname -r 2>/dev/null || echo unknown)"
+check_path /dev/dri/card0
+check_path /run
+mountpoint -q /run 2>/dev/null && ok '/run mounted' || { warn '/run is not mounted'; fail=$((fail+1)); }
+[[ -w / ]] && ok 'root filesystem writable' || { warn 'root filesystem not writable'; fail=$((fail+1)); }
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl is-active --quiet NetworkManager.service && ok 'NetworkManager active' || warn 'NetworkManager not active yet'
+  systemctl is-enabled --quiet gdm3.service 2>/dev/null && ok 'GDM enabled' || warn 'GDM not enabled'
+  failed_units="$(systemctl --failed --no-legend --plain 2>/dev/null | awk 'NF {count++} END {print count+0}')"
+  if [[ "$failed_units" == "0" ]]; then
+    ok 'no failed systemd units'
+  else
+    warn "$failed_units failed systemd unit(s)"
+    fail=$((fail+1))
+  fi
+fi
+if mountpoint -q /boot/efi 2>/dev/null; then ok 'EFI System Partition mounted'; else warn 'EFI System Partition not mounted (normal for direct-kernel dev boot)'; fi
+avail_kb="$(df -Pk / 2>/dev/null | awk 'NR==2 {print $4}')"
+if [[ "$avail_kb" =~ ^[0-9]+$ ]]; then
+  if (( avail_kb < 1048576 )); then warn 'less than 1 GiB free on root filesystem'; fail=$((fail+1)); else ok 'root filesystem has usable free space'; fi
+fi
+printf 'Health warnings: %d\n' "$fail"
+# Never block boot because of a diagnostic warning.
+exit 0

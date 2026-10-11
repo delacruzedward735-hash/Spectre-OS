@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -u
+blue='\033[1;36m'; reset='\033[0m'
+section(){ printf '\n%b== %s ==%b\n' "$blue" "$1" "$reset"; }
+
+section 'Spectre identity'
+grep -E '^(PRETTY_NAME|VERSION|VERSION_ID|BUILD_ID)=' /etc/os-release 2>/dev/null || true
+grep -E '^(BUILD_ID|RUNTIME_SOURCE_SHA256|BUILD_MODE)=' /etc/spectre-build 2>/dev/null || true
+printf 'Kernel: %s\n' "$(uname -srmo 2>/dev/null || true)"
+printf 'Session: %s / %s\n' "${XDG_CURRENT_DESKTOP:-unknown}" "${XDG_SESSION_TYPE:-unknown}"
+printf 'Mode: %s\n' "$([[ -f /etc/spectre-installation ]] && echo installed || echo live/development)"
+
+section 'Graphics'
+command -v lspci >/dev/null && lspci -nnk | grep -EA3 'VGA|3D|Display' || true
+ls -l /dev/dri 2>/dev/null || echo '/dev/dri unavailable'
+command -v glxinfo >/dev/null && glxinfo -B 2>/dev/null | grep -E 'OpenGL vendor|OpenGL renderer|OpenGL core profile version' || true
+
+section 'Network'
+command -v nmcli >/dev/null && nmcli -f DEVICE,TYPE,STATE device status || true
+printf 'NetworkManager: %s\n' "$(systemctl is-active NetworkManager.service 2>/dev/null || true)"
+printf 'Legacy networking unit: %s\n' "$(systemctl is-enabled networking.service 2>/dev/null || true)"
+
+section 'Storage'
+lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINTS 2>/dev/null || true
+df -hT / /boot/efi 2>/dev/null || df -hT / 2>/dev/null || true
+command -v fstrim >/dev/null && printf 'TRIM timer: %s\n' "$(systemctl is-enabled fstrim.timer 2>/dev/null || true)"
+
+section 'Memory / compressed swap'
+free -h 2>/dev/null || true
+if [[ -x /usr/sbin/swapon ]]; then /usr/sbin/swapon --show 2>/dev/null || true; elif [[ -x /sbin/swapon ]]; then /sbin/swapon --show 2>/dev/null || true; else cat /proc/swaps 2>/dev/null || true; fi
+zramctl 2>/dev/null || true
+uptime 2>/dev/null || true
+
+section 'Power / battery'
+command -v powerprofilesctl >/dev/null && { printf 'Power profile: '; powerprofilesctl get 2>/dev/null || true; } || true
+for b in /sys/class/power_supply/BAT*; do
+  [[ -d "$b" ]] || continue
+  printf '%s: %s%% %s\n' "$(basename "$b")" "$(cat "$b/capacity" 2>/dev/null || echo '?')" "$(cat "$b/status" 2>/dev/null || echo '?')"
+done
+
+section 'Audio / Bluetooth'
+printf 'PipeWire: %s\n' "$(systemctl --user is-active pipewire.service 2>/dev/null || pgrep -x pipewire >/dev/null && echo active || echo inactive)"
+printf 'WirePlumber: %s\n' "$(systemctl --user is-active wireplumber.service 2>/dev/null || pgrep -x wireplumber >/dev/null && echo active || echo inactive)"
+printf 'Bluetooth: %s\n' "$(systemctl is-active bluetooth.service 2>/dev/null || true)"
+
+section 'Security'
+if command -v ufw >/dev/null; then ufw status 2>/dev/null | head -8 || true; else echo 'UFW unavailable'; fi
+if command -v aa-status >/dev/null; then aa-status 2>/dev/null | head -12 || true; else echo 'AppArmor tools unavailable'; fi
+
+section 'Failed services'
+systemctl --failed --no-pager 2>/dev/null || true
+
+section 'Spectre components'
+command -v spectre-status >/dev/null && spectre-status || true
+if [[ -f /etc/spectre-installation ]] && command -v spectre-installed-health >/dev/null; then
+  echo
+  spectre-installed-health || true
+fi
+
+section 'GNOME'
+gnome-shell --version 2>/dev/null || true
+command -v gnome-extensions >/dev/null && { echo 'Enabled extensions:'; gnome-extensions list --enabled 2>/dev/null || true; }
+if command -v gsettings >/dev/null && gsettings list-schemas 2>/dev/null | grep -Fxq org.spectre.desktop; then
+  printf 'App grid initialized: %s\n' "$(gsettings get org.spectre.desktop app-grid-initialized 2>/dev/null || echo unknown)"
+fi
+
+section 'GNOME Shell warnings (current boot)'
+journalctl --user -b -o cat --no-pager 2>/dev/null | grep -Ei '(gnome-shell|Spectre (Panel|Insight)).*(error|exception|failed)' | tail -n 30 || true
+
+printf '\nDiagnostic report complete.\n'
+printf 'For a shareable local report run: spectre-support-report\n'

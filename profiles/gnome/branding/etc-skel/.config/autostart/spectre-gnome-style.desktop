@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Spectre Desktop Style
+Comment=Apply the Spectre GNOME desktop defaults on first login
+Exec=/usr/local/bin/spectre-gnome-style
+OnlyShowIn=GNOME;
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+Terminal=false

@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Spectre Desktop Apps & Icons — RC5.5 unified desktop."""
+from __future__ import annotations
+import argparse, os, shutil, subprocess
+from pathlib import Path
+import gi
+gi.require_version('Gtk','4.0'); gi.require_version('Adw','1')
+from gi.repository import Adw, Gio, Gtk
+APP_ID='com.spectre.DesktopApps'
+DING='ding@rastersoft.com'
+DING_SCHEMA='org.gnome.shell.extensions.ding'
+
+def desktop_dir():
+    try:
+        value=subprocess.check_output(['xdg-user-dir','DESKTOP'],text=True).strip()
+        if value:return Path(value)
+    except Exception: pass
+    return Path.home()/'Desktop'
+
+def source_for_id(app_id):
+    for base in (Path.home()/'.local/share/applications',Path('/usr/local/share/applications'),Path('/usr/share/applications')):
+        c=base/app_id
+        if c.is_file():return c
+    return None
+
+def notify(message):
+    try: subprocess.Popen(['notify-send','Spectre Desktop',message],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    except OSError: pass
+
+def refresh_desktop():
+    try: subprocess.Popen(['/usr/local/bin/spectre-desktop-refresh'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    except OSError: pass
+
+def toggle_desktop_cli(aid):
+    if not aid or '/' in aid or '\\' in aid or not aid.endswith('.desktop'):
+        raise SystemExit('Invalid application desktop ID')
+    target=desktop_dir()/aid
+    if target.exists():
+        target.unlink(); refresh_desktop(); notify(f'Unpinned {aid.removesuffix(".desktop")} from Desktop'); return 0
+    src=source_for_id(aid)
+    if src is None: raise SystemExit(f'Application launcher not found: {aid}')
+    target.parent.mkdir(parents=True,exist_ok=True)
+    shutil.copy2(src,target); os.chmod(target,0o755)
+    subprocess.run(['gio','set',str(target),'metadata::trusted','true'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    refresh_desktop(); notify(f'Pinned {aid.removesuffix(".desktop")} to Desktop'); return 0
+
+def ding_settings():
+    try:return Gio.Settings.new(DING_SCHEMA)
+    except Exception:return None
+
+class App(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID); self.apps=[]; self.shell=Gio.Settings.new('org.gnome.shell'); self.ding=ding_settings()
+    def do_activate(self):
+        if self.props.active_window:self.props.active_window.present();return
+        self.win=Adw.ApplicationWindow(application=self,title='Desktop Apps & Icons'); self.win.set_default_size(880,720)
+        tv=Adw.ToolbarView(); hb=Adw.HeaderBar(); hb.set_title_widget(Adw.WindowTitle(title='Desktop Apps & Icons',subtitle='One stable Spectre desktop — pins never switch desktop engines')); tv.add_top_bar(hb)
+        root=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=14)
+        for x in ('top','bottom','start','end'):getattr(root,f'set_margin_{x}')(18)
+        group=Adw.PreferencesGroup(title='Desktop behavior',description='Desktop Icons NG stays active for files, folders, drag/drop, rename, Trash and application shortcuts.')
+        engine=Adw.ActionRow(title='Spectre Desktop',subtitle='Unified file-backed desktop engine is active from login.',icon_name='user-desktop-symbolic'); group.add(engine)
+        self.home=Adw.SwitchRow(title='Show Home folder',subtitle='Show a Home shortcut on the wallpaper.'); self.home.set_active(self._ding_bool('show-home')); self.home.connect('notify::active',self._home_changed); group.add(self.home)
+        self.trash=Adw.SwitchRow(title='Show Trash',subtitle='Show Trash on the wallpaper.'); self.trash.set_active(self._ding_bool('show-trash')); self.trash.connect('notify::active',self._trash_changed); group.add(self.trash)
+        folder=Adw.ActionRow(title='Desktop folder',subtitle=str(desktop_dir()),icon_name='folder-symbolic',activatable=True); folder.connect('activated',lambda *_:subprocess.Popen(['/usr/local/bin/spectre-files',str(desktop_dir())])); group.add(folder)
+        root.append(group)
+        apps=Adw.PreferencesGroup(title='Applications',description='Pinning changes only a trusted launcher in the Desktop folder; the desktop itself never changes mode.')
+        self.search=Gtk.SearchEntry(); self.search.set_placeholder_text('Search installed applications…'); self.search.connect('search-changed',lambda *_:self._refresh()); apps.add(self.search)
+        self.listbox=Gtk.ListBox(); self.listbox.set_selection_mode(Gtk.SelectionMode.NONE); self.listbox.add_css_class('boxed-list')
+        sc=Gtk.ScrolledWindow(); sc.set_policy(Gtk.PolicyType.NEVER,Gtk.PolicyType.AUTOMATIC); sc.set_min_content_height(390); sc.set_child(self.listbox); apps.add(sc); root.append(apps)
+        self.status=Gtk.Label(label=''); self.status.set_xalign(0); self.status.set_wrap(True); self.status.add_css_class('dim-label'); root.append(self.status)
+        tv.set_content(root); self.win.set_content(tv); self._load(); self._refresh(); self.win.present()
+    def _ding_bool(self,key):
+        try:return self.ding.get_boolean(key) if self.ding else False
+        except Exception:return False
+    def _set_ding_bool(self,key,value):
+        try:
+            if self.ding:self.ding.set_boolean(key,value); refresh_desktop(); return True
+        except Exception:pass
+        self.status.set_text('Desktop Icons NG settings are unavailable in this session.'); return False
+    def _home_changed(self,row,_):self._set_ding_bool('show-home',row.get_active())
+    def _trash_changed(self,row,_):self._set_ding_bool('show-trash',row.get_active())
+    def _load(self):
+        seen=set(); vals=[]
+        for app in Gio.AppInfo.get_all():
+            try:
+                aid=app.get_id() or ''
+                if not aid.endswith('.desktop') or aid in seen or not app.should_show() or source_for_id(aid) is None:continue
+                seen.add(aid); vals.append(app)
+            except Exception:continue
+        self.apps=sorted(vals,key=lambda a:(a.get_display_name() or '').casefold())
+    def _clear(self):
+        c=self.listbox.get_first_child()
+        while c:
+            n=c.get_next_sibling(); self.listbox.remove(c); c=n
+    def _favorites(self):return list(self.shell.get_strv('favorite-apps'))
+    def _refresh(self):
+        self._clear(); q=self.search.get_text().strip().casefold(); shown=0; desk=desktop_dir(); desk.mkdir(parents=True,exist_ok=True); fav=set(self._favorites())
+        for app in self.apps:
+            name=app.get_display_name() or app.get_name() or app.get_id() or 'Application'; desc=app.get_description() or ''; aid=app.get_id() or ''
+            if q and q not in f'{name} {desc} {aid}'.casefold():continue
+            row=Adw.ActionRow(title=name,subtitle=desc[:120]); icon=app.get_icon()
+            if icon:row.add_prefix(Gtk.Image.new_from_gicon(icon))
+            target=desk/aid
+            desk_btn=Gtk.Button(label='Unpin Desktop' if target.exists() else 'Pin Desktop'); desk_btn.set_valign(Gtk.Align.CENTER); desk_btn.connect('clicked',self._desktop,aid,target); row.add_suffix(desk_btn)
+            task_btn=Gtk.Button(label='Unpin Taskbar' if aid in fav else 'Pin Taskbar'); task_btn.set_valign(Gtk.Align.CENTER); task_btn.connect('clicked',self._taskbar,aid); row.add_suffix(task_btn)
+            self.listbox.append(row); shown+=1
+            if shown>=80:break
+        if not shown:self.listbox.append(Adw.ActionRow(title='No applications found',subtitle='Try another search term.'))
+    def _desktop(self,_button,aid,target):
+        try:
+            if target.exists():target.unlink(); self.status.set_text(f'Unpinned {target.stem} from the desktop.')
+            else:
+                src=source_for_id(aid)
+                if src is None:self.status.set_text('Application launcher not found.');return
+                target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(src,target); os.chmod(target,0o755)
+                subprocess.run(['gio','set',str(target),'metadata::trusted','true'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                self.status.set_text(f'Pinned {target.stem} to the desktop.')
+            refresh_desktop()
+        except OSError as exc:self.status.set_text(f'Unable to change desktop shortcut: {exc}')
+        self._refresh()
+    def _taskbar(self,_button,aid):
+        fav=self._favorites()
+        if aid in fav:fav=[x for x in fav if x!=aid]; action='Unpinned'; prep='from'
+        else:fav.append(aid);action='Pinned';prep='to'
+        self.shell.set_strv('favorite-apps',fav); self.status.set_text(f'{action} {aid.removesuffix(".desktop")} {prep} the taskbar.'); self._refresh()
+if __name__=='__main__':
+    parser=argparse.ArgumentParser(add_help=True); parser.add_argument('--toggle-desktop',metavar='APP_ID'); args=parser.parse_args()
+    if args.toggle_desktop:raise SystemExit(toggle_desktop_cli(args.toggle_desktop))
+    Adw.init(); raise SystemExit(App().run(None))

@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""Apply Spectre's minimal Desktop Icons NG integration.
+
+Spectre deliberately relies on DING for file-backed desktop behavior instead of
+reimplementing a file manager in GNOME Shell.  Debian Trixie currently ships
+DING 48.1.0-1.  That release has no explicit Refresh entry in the background
+menu, so Spectre adds one using DING's own asynchronous _updateDesktop() method.
+
+The patch is intentionally version/anchor guarded.  If Debian changes DING's
+layout, image construction fails rather than silently producing an unqualified
+third-party modification.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+PACKAGE = "gnome-shell-extension-desktop-icons-ng"
+QUALIFIED_VERSION = "48.1.0-1"
+MARKER = "SPECTRE_RC54_DING_REFRESH"
+MENU_MARKER = "SPECTRE_RC55_DING_MENU"
+THEME_MARKER = "SPECTRE_RC57_DING_THEME_V1"
+
+
+def package_version(root: Path) -> str | None:
+    status = root / "var/lib/dpkg/status"
+    try:
+        text = status.read_text(errors="replace")
+    except OSError:
+        return None
+    for para in text.split("\n\n"):
+        if re.search(rf"^Package:\s*{re.escape(PACKAGE)}\s*$", para, re.M):
+            match = re.search(r"^Version:\s*(\S+)\s*$", para, re.M)
+            return match.group(1) if match else None
+    return None
+
+
+def candidate_files(root: Path) -> list[Path]:
+    base = root / "usr/share/gnome-shell/extensions/ding@rastersoft.com"
+    return [base / "app/desktopManager.js", base / "desktopManager.js"]
+
+
+def patch_gtk3(path: Path, text: str) -> str | None:
+    if "_createDesktopBackgroundMenu()" not in text:
+        return None
+    anchor = "        this._menu = new Gtk.Menu();\n"
+    if anchor not in text:
+        return None
+    addition = anchor + f'''        // {MARKER}: Spectre keeps DING's mature file desktop but restores\n        // an explicit Windows-familiar refresh action.  Refresh is native to\n        // DING so there is no competing second desktop context menu.\n        // Give only this desktop menu a Spectre style hook.  This lets the\n        // GTK compatibility layer remove light-mode outlines/divider lines\n        // without flattening unrelated GTK application menus.\n        // SPECTRE_REALOS_DING_CSS_V1: direct GTK3 provider.\n        if (!this._spectreMenuCssProvider) {{\n            try {{\n                const spectreProvider = new Gtk.CssProvider();\n                spectreProvider.load_from_path('/usr/local/share/spectre/ding-menu.css');\n                const spectreScreen = imports.gi.Gdk.Screen.get_default();\n                if (spectreScreen) {{\n                    Gtk.StyleContext.add_provider_for_screen(\n                        spectreScreen, spectreProvider, Gtk.STYLE_PROVIDER_PRIORITY_USER);\n                    this._spectreMenuCssProvider = spectreProvider;\n                }}\n            }} catch (e) {{\n                print(`Spectre DING CSS provider failed: ${{e.message}}`);\n            }}\n        }}\n        this._menu.get_style_context().add_class('spectre-desktop-menu');\n        const spectreRefresh = new Gtk.MenuItem({{label: _(\"Refresh\")}});\n        spectreRefresh.connect(\"activate\", () => {{\n            this._updateDesktop().catch((e) => {{\n                print(`Exception while refreshing Spectre Desktop: ${{e.message}}\\n${{e.stack}}`);\n            }});\n        }});\n        this._menu.add(spectreRefresh);\n        this._menu.add(new Gtk.SeparatorMenuItem());\n'''
+    return text.replace(anchor, addition, 1)
+
+
+
+def patch_realso_provider(text: str) -> str | None:
+    """Migrate the RealOS GTK provider into an already-patched DING runtime."""
+    provider_marker = "SPECTRE_REALOS_DING_CSS_V1"
+    provider_path = "spectreProvider.load_from_path('/usr/local/share/spectre/ding-menu.css')"
+
+    if provider_marker in text and provider_path in text and "Gtk.StyleContext.add_provider_for_screen" in text:
+        return text.replace(
+            "spectreScreen, spectreProvider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)",
+            "spectreScreen, spectreProvider, Gtk.STYLE_PROVIDER_PRIORITY_USER)",
+            1
+        )
+
+    anchor = "        this._menu.get_style_context().add_class('spectre-desktop-menu');\n"
+    if anchor not in text:
+        return None
+
+    addition = "\n".join([
+        "        // SPECTRE_REALOS_DING_CSS_V1: migrate provider into existing Spectre DING.",
+        "        if (!this._spectreMenuCssProvider) {",
+        "            try {",
+        "                const spectreProvider = new Gtk.CssProvider();",
+        "                spectreProvider.load_from_path('/usr/local/share/spectre/ding-menu.css');",
+        "                const spectreScreen = imports.gi.Gdk.Screen.get_default();",
+        "                if (spectreScreen) {",
+        "                    Gtk.StyleContext.add_provider_for_screen(",
+        "                        spectreScreen, spectreProvider, Gtk.STYLE_PROVIDER_PRIORITY_USER);",
+        "                    this._spectreMenuCssProvider = spectreProvider;",
+        "                }",
+        "            } catch (e) {",
+        "                print(`Spectre DING CSS provider failed: ${e.message}`);",
+        "            }",
+        "        }",
+        ""
+    ])
+    return text.replace(anchor, addition + anchor, 1)
+
+
+def patch_spectre_actions(text: str) -> str | None:
+    if MENU_MARKER in text:
+        return text
+    anchor = "        this._menu.show_all();\n"
+    if anchor not in text:
+        return None
+    addition = f"""        // {MENU_MARKER}: Spectre system actions layered on DING's native desktop menu.
+        this._menu.add(new Gtk.SeparatorMenuItem());
+
+        const spectreDesktopApps = new Gtk.MenuItem({{label: _(\"Desktop Apps & Icons\")}});
+        spectreDesktopApps.connect(\"activate\", () => {{
+            GLib.spawn_command_line_async('/usr/local/bin/spectre-desktop-apps');
+        }});
+        this._menu.add(spectreDesktopApps);
+
+        const spectreTaskbar = new Gtk.MenuItem({{label: _(\"Taskbar Settings\")}});
+        spectreTaskbar.connect(\"activate\", () => {{
+            GLib.spawn_command_line_async('/usr/local/bin/spectre-taskbar-settings');
+        }});
+        this._menu.add(spectreTaskbar);
+
+        const spectreShortcuts = new Gtk.MenuItem({{label: _(\"Keyboard Shortcuts\")}});
+        spectreShortcuts.connect(\"activate\", () => {{
+            GLib.spawn_command_line_async('/usr/local/bin/spectre-shortcuts');
+        }});
+        this._menu.add(spectreShortcuts);
+
+        const spectreCenter = new Gtk.MenuItem({{label: _(\"Spectre Center\")}});
+        spectreCenter.connect(\"activate\", () => {{
+            GLib.spawn_command_line_async('/usr/local/bin/spectre-center');
+        }});
+        this._menu.add(spectreCenter);
+
+"""
+    return text.replace(anchor, addition + anchor, 1)
+
+
+def patch_dynamic_theme(text: str) -> str | None:
+    '''Make DING's GTK3 menu follow the actual GNOME color scheme.
+
+    This is scoped to the DING process and its single native menu. GNOME Shell
+    owns the separate fallback menu; Spectre's appearance sync remains the
+    authoritative desktop-wide wallpaper and Shell theme controller.
+    '''
+    if THEME_MARKER in text:
+        return text
+    anchor = "        this._menu.get_style_context().add_class('spectre-desktop-menu');\n"
+    if text.count(anchor) != 1:
+        return None
+    addition = anchor + f'''        // {THEME_MARKER}: synchronize DING's independent GTK3 process.
+        // Use concrete CSS palettes; @theme_bg_color can remain light when
+        // a long-lived DING process outlives a GNOME appearance transition.
+        const spectreMenu = this._menu;
+        const spectreGtkSettings = Gtk.Settings.get_default();
+        const spectreApplyMenuTheme = (dark) => {{
+            if (spectreGtkSettings) {{
+                spectreGtkSettings.set_property('gtk-theme-name', dark ? 'Adwaita-dark' : 'Adwaita');
+                spectreGtkSettings.set_property('gtk-application-prefer-dark-theme', dark);
+            }}
+            const context = spectreMenu.get_style_context();
+            context.remove_class('spectre-menu-light');
+            context.remove_class('spectre-menu-dark');
+            context.add_class(dark ? 'spectre-menu-dark' : 'spectre-menu-light');
+        }};
+        try {{
+            const spectreColorSettings = new imports.gi.Gio.Settings({{
+                schema_id: 'org.gnome.desktop.interface',
+            }});
+            const spectreReadDark = () =>
+                spectreColorSettings.get_string('color-scheme') === 'prefer-dark';
+            spectreApplyMenuTheme(spectreReadDark());
+            const spectreThemeHandler = spectreColorSettings.connect(
+                'changed::color-scheme', () => spectreApplyMenuTheme(spectreReadDark())
+            );
+            spectreMenu.connect('destroy', () => {{
+                spectreColorSettings.disconnect(spectreThemeHandler);
+            }});
+        }} catch (e) {{
+            print(`Spectre DING appearance sync failed: ${{e.message}}`);
+            const current = spectreGtkSettings
+                ? spectreGtkSettings.get_property('gtk-theme-name') : '';
+            spectreApplyMenuTheme(String(current).toLowerCase().endsWith('-dark'));
+        }}
+'''
+    return text.replace(anchor, addition, 1)
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", default="/", help="offline root to patch")
+    parser.add_argument("--check", action="store_true", help="verify integration only")
+    parser.add_argument("--allow-version-mismatch", action="store_true",
+                        help="developer-only: try known anchors on another DING version")
+    args = parser.parse_args()
+
+    root = Path(args.root).resolve()
+    version = package_version(root)
+    if version is None:
+        print(f"[FAIL] {PACKAGE} is not registered in {root}", file=sys.stderr)
+        return 2
+    if version != QUALIFIED_VERSION and not args.allow_version_mismatch:
+        print(f"[FAIL] Spectre DING integration is qualified for {QUALIFIED_VERSION}; found {version}", file=sys.stderr)
+        return 3
+
+    path = next((p for p in candidate_files(root) if p.is_file()), None)
+    if path is None:
+        print("[FAIL] DING desktopManager.js not found in qualified package layout", file=sys.stderr)
+        return 4
+
+    text = path.read_text(errors="strict")
+    provider_ok = (
+        "SPECTRE_REALOS_DING_CSS_V1" in text
+        and "spectreProvider.load_from_path('/usr/local/share/spectre/ding-menu.css')" in text
+        and "Gtk.StyleContext.add_provider_for_screen" in text
+        and "spectreScreen, spectreProvider, Gtk.STYLE_PROVIDER_PRIORITY_USER)" in text
+    )
+    if args.check:
+        if MARKER in text and MENU_MARKER in text and THEME_MARKER in text and provider_ok:
+            print(f"[OK] Spectre unified desktop menu integration present in {path}")
+            return 0
+        print(f"[FAIL] Spectre unified desktop menu integration missing from {path}", file=sys.stderr)
+        return 5
+
+    patched = text
+    if MARKER not in patched:
+        patched = patch_gtk3(path, patched)
+        if patched is None:
+            print("[FAIL] Qualified DING Refresh anchors changed; refusing an unsafe blind patch", file=sys.stderr)
+            return 6
+    patched = patch_spectre_actions(patched)
+    if patched is None:
+        print("[FAIL] Qualified DING system-menu anchors changed; refusing an unsafe blind patch", file=sys.stderr)
+        return 6
+
+    # SPECTRE_REALOS_DING_MIGRATION_V1
+    patched = patch_realso_provider(patched)
+    if patched is None:
+        print("[FAIL] Qualified DING RealOS provider anchor changed; refusing an unsafe blind patch", file=sys.stderr)
+        return 6
+
+    patched = patch_dynamic_theme(patched)
+    if patched is None:
+        print("[FAIL] Qualified DING theme anchor changed; refusing an unsafe blind patch", file=sys.stderr)
+        return 6
+
+    path.write_text(patched)
+    verify = path.read_text(errors="strict")
+    # SPECTRE_REALOS_DING_POSTWRITE_V1
+    provider_ok = (
+        "SPECTRE_REALOS_DING_CSS_V1" in verify
+        and "spectreProvider.load_from_path('/usr/local/share/spectre/ding-menu.css')" in verify
+        and "Gtk.StyleContext.add_provider_for_screen" in verify
+        and "spectreScreen, spectreProvider, Gtk.STYLE_PROVIDER_PRIORITY_USER)" in verify
+    )
+    if MARKER not in verify or MENU_MARKER not in verify or THEME_MARKER not in verify or 'label: _("Refresh")' not in verify or not provider_ok:
+        print("[FAIL] DING patch did not verify after write", file=sys.stderr)
+        return 7
+    print(f"[OK] Added Spectre unified desktop menu to DING {version}: {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

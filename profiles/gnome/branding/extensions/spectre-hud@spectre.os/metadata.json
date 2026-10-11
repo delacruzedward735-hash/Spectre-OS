@@ -1,0 +1,12 @@
+{
+  "uuid": "spectre-hud@spectre.os",
+  "name": "Spectre Insight",
+  "description": "Live desktop cards, a compact system overview and a top-panel Settings shortcut.",
+  "shell-version": [
+    "48"
+  ],
+  "version": 6,
+  "session-modes": [
+    "user"
+  ]
+}

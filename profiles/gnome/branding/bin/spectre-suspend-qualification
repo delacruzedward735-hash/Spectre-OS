@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/spectre/suspend-qualification.env"
+mkdir -p "$(dirname "$STATE")"
+mode="${1:-status}"
+case "$mode" in
+  prepare)
+    boot_id="$(cat /proc/sys/kernel/random/boot_id)"
+    machine_id="$(cat /etc/machine-id 2>/dev/null || true)"
+    epoch="$(date +%s)"
+    nm="$(systemctl is-active NetworkManager.service 2>/dev/null || true)"
+    cat > "$STATE" <<EOF
+BOOT_ID=$boot_id
+MACHINE_ID=$machine_id
+EPOCH=$epoch
+NETWORK=$nm
+EOF
+    chmod 0600 "$STATE"
+    echo '[OK] Suspend/resume qualification checkpoint prepared.'
+    echo 'Now suspend Spectre normally. After resume run:'
+    echo '  spectre-suspend-qualification verify'
+    ;;
+  verify)
+    [[ -f "$STATE" ]] || { echo '[FAIL] No checkpoint. Run prepare first.' >&2; exit 2; }
+    # shellcheck disable=SC1090
+    source "$STATE"
+    now_boot="$(cat /proc/sys/kernel/random/boot_id)"
+    now_machine="$(cat /etc/machine-id 2>/dev/null || true)"
+    now="$(date +%s)"
+    fail=0
+    if [[ "$now_boot" == "$BOOT_ID" ]]; then echo '[OK] Same kernel boot survived suspend/resume.'; else echo '[FAIL] Boot ID changed; system rebooted instead of resuming.'; fail=1; fi
+    if [[ "$now_machine" == "$MACHINE_ID" ]]; then echo '[OK] Machine identity persisted.'; else echo '[FAIL] Machine identity changed.'; fail=1; fi
+    if (( now > EPOCH )); then echo "[OK] Clock advanced by $((now-EPOCH)) seconds."; else echo '[FAIL] Clock did not advance.'; fail=1; fi
+    if systemctl is-active --quiet NetworkManager.service; then echo '[OK] NetworkManager active after resume.'; else echo '[WARN] NetworkManager is not active after resume.'; fi
+    if systemctl --user is-active --quiet pipewire.service 2>/dev/null || pgrep -x pipewire >/dev/null 2>&1; then echo '[OK] PipeWire active after resume.'; else echo '[WARN] PipeWire not active after resume.'; fi
+    if (( fail )); then echo '[FAIL] Suspend/resume qualification failed.'; exit 1; fi
+    rm -f "$STATE"
+    echo '[PASS] Suspend/resume qualification completed.'
+    ;;
+  reset) rm -f "$STATE"; echo '[OK] Suspend qualification state cleared.' ;;
+  status) [[ -f "$STATE" ]] && { echo "Pending checkpoint: $STATE"; cat "$STATE"; } || echo 'No pending suspend qualification.' ;;
+  *) echo 'Usage: spectre-suspend-qualification {prepare|verify|status|reset}' >&2; exit 2 ;;
+esac

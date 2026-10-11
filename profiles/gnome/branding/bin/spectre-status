@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -u
+
+spectre_find_admin_cmd() {
+  command -v "$1" 2>/dev/null || { [[ -x "/usr/sbin/$1" ]] && printf '/usr/sbin/%s\n' "$1"; }
+}
+
+ok=0; warn=0; fail=0
+line(){ printf '%-28s %-12s %s\n' "$1" "$2" "${3:-}"; }
+pass(){ ok=$((ok+1)); line "$1" PASS "$2"; }
+warning(){ warn=$((warn+1)); line "$1" WARN "$2"; }
+failure(){ fail=$((fail+1)); line "$1" FAIL "$2"; }
+
+is_live=0
+if findmnt -rn /run/live/medium >/dev/null 2>&1 || findmnt -rn /lib/live/mount/medium >/dev/null 2>&1; then is_live=1; fi
+installed=0; [[ -f /etc/spectre-installation ]] && installed=1
+
+printf 'Spectre OS Status\n'
+printf '=================\n'
+if (( installed && ! is_live )); then pass 'Session mode' 'Installed OS'; elif (( is_live )); then warning 'Session mode' 'Live session'; else warning 'Session mode' 'Development/unknown'; fi
+
+kernel="$(uname -r 2>/dev/null || true)"
+[[ "$kernel" == *-spectre* ]] && pass 'Kernel' "$kernel" || failure 'Kernel' "${kernel:-unknown}"
+
+root_src="$(findmnt -nro SOURCE / 2>/dev/null || true)"
+root_fs="$(findmnt -nro FSTYPE / 2>/dev/null || true)"
+if (( installed && ! is_live )); then
+  [[ "$root_src" == /dev/* && "$root_fs" != overlay ]] && pass 'Root filesystem' "$root_src ($root_fs)" || failure 'Root filesystem' "${root_src:-unknown} (${root_fs:-unknown})"
+else
+  line 'Root filesystem' INFO "${root_src:-unknown} (${root_fs:-unknown})"
+fi
+
+if mountpoint -q /boot/efi 2>/dev/null; then pass 'EFI System Partition' "$(findmnt -nro SOURCE /boot/efi 2>/dev/null || true)"; else warning 'EFI System Partition' 'not mounted'; fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl is-active --quiet NetworkManager.service && pass 'NetworkManager' active || failure 'NetworkManager' inactive
+  if systemctl is-active --quiet gdm3.service 2>/dev/null || systemctl is-active --quiet gdm.service 2>/dev/null; then pass 'Display manager' active; else warning 'Display manager' 'not active'; fi
+  failed_units="$(systemctl --failed --no-legend --plain 2>/dev/null | awk 'NF{n++} END{print n+0}')"
+  [[ "$failed_units" == 0 ]] && pass 'Failed systemd units' 0 || failure 'Failed systemd units' "$failed_units"
+  systemctl is-active --quiet power-profiles-daemon.service 2>/dev/null && pass 'Power profiles' active || warning 'Power profiles' unavailable
+  systemctl is-enabled --quiet fstrim.timer 2>/dev/null && pass 'SSD TRIM timer' enabled || warning 'SSD TRIM timer' disabled
+fi
+
+if [[ -r /proc/swaps ]]; then
+  zram="$(awk 'NR>1 && $1 ~ /^\/dev\/zram/{print $1; exit}' /proc/swaps 2>/dev/null || true)"
+  [[ -n "$zram" ]] && pass 'Compressed memory' "$zram" || warning 'Compressed memory' 'zram not active'
+fi
+
+ufw_bin="$(spectre_find_admin_cmd ufw || true)"
+if [[ -r /etc/ufw/ufw.conf ]] && grep -Eq '^ENABLED=(yes|YES|true|TRUE)$' /etc/ufw/ufw.conf; then
+  pass 'Firewall' enabled
+elif [[ -n "$ufw_bin" ]]; then
+  ufw_status="$("$ufw_bin" status 2>/dev/null | sed -n 's/^Status: //p' | head -1)"
+  [[ "$ufw_status" == active ]] && pass 'Firewall' active || warning 'Firewall' "${ufw_status:-installed but not confirmed active}"
+else
+  warning 'Firewall' 'ufw unavailable'
+fi
+
+aa_bin="$(spectre_find_admin_cmd aa-status || true)"
+if [[ -n "$aa_bin" ]]; then
+  "$aa_bin" --enabled >/dev/null 2>&1 && pass 'AppArmor' enabled || warning 'AppArmor' disabled
+else
+  warning 'AppArmor' 'tools unavailable'
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  if systemctl --user is-active --quiet pipewire.service 2>/dev/null || pgrep -x pipewire >/dev/null 2>&1; then pass 'Audio stack' PipeWire; else warning 'Audio stack' 'PipeWire not active'; fi
+fi
+
+avail_kb="$(df -Pk / 2>/dev/null | awk 'NR==2{print $4}')"
+if [[ "$avail_kb" =~ ^[0-9]+$ ]]; then
+  if (( avail_kb >= 5242880 )); then pass 'Root free space' "$((avail_kb/1024/1024)) GiB"; elif (( avail_kb >= 1048576 )); then warning 'Root free space' "$((avail_kb/1024/1024)) GiB"; else failure 'Root free space' '<1 GiB'; fi
+fi
+
+if [[ -f /var/lib/spectre/last-boot ]]; then
+  boots="$(wc -l < /var/lib/spectre/boot-history.log 2>/dev/null || echo 0)"
+  pass 'Boot history' "$boots recorded boot(s)"
+fi
+
+printf '\nSummary: %d PASS, %d WARN, %d FAIL\n' "$ok" "$warn" "$fail"
+if (( fail )); then
+  printf 'SYSTEM HEALTH: FAILED\n'
+  exit 1
+elif (( warn )); then
+  printf 'SYSTEM HEALTH: GOOD WITH WARNINGS\n'
+else
+  printf 'SYSTEM HEALTH: GOOD\n'
+fi

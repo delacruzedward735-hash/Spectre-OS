@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -u
+
+spectre_find_admin_cmd() {
+  command -v "$1" 2>/dev/null || { [[ -x "/usr/sbin/$1" ]] && printf '/usr/sbin/%s\n' "$1"; }
+}
+
+OUT_DIR="${XDG_DOCUMENTS_DIR:-$HOME/Documents}/Spectre-Support"
+mkdir -p "$OUT_DIR"
+stamp="$(date +%Y%m%d-%H%M%S)"
+out="$OUT_DIR/spectre-support-$stamp.txt"
+user_name="${USER:-unknown}"
+host_name="$(hostname 2>/dev/null || echo unknown)"
+
+sanitize(){
+  sed \
+    -e "s#${HOME//\#/\\#}#~#g" \
+    -e "s/${user_name}/<user>/g" \
+    -e "s/${host_name}/<hostname>/g"
+}
+
+{
+  echo 'Spectre OS Support Report'
+  echo '========================='
+  echo "Created: $(date -Is)"
+  echo 'Privacy note: usernames, home paths and hostname are sanitized. Wi-Fi SSIDs, MAC addresses and IP addresses are intentionally omitted.'
+  echo
+
+  echo '== Identity =='
+  grep -E '^(PRETTY_NAME|VERSION|VERSION_ID|BUILD_ID)=' /etc/os-release 2>/dev/null || true
+  grep -E '^(BUILD_ID|RUNTIME_SOURCE_SHA256|BUILD_MODE)=' /etc/spectre-build 2>/dev/null || true
+  uname -srmo 2>/dev/null || true
+  echo
+
+  echo '== Session / boot =='
+  printf 'Session type: %s\n' "${XDG_SESSION_TYPE:-unknown}"
+  printf 'Desktop: %s\n' "${XDG_CURRENT_DESKTOP:-unknown}"
+  printf 'Root: '; findmnt -nro SOURCE,FSTYPE,OPTIONS / 2>/dev/null || true
+  printf 'EFI: '; findmnt -nro SOURCE,FSTYPE,OPTIONS /boot/efi 2>/dev/null || true
+  if [[ -f /var/lib/spectre/last-boot ]]; then cat /var/lib/spectre/last-boot; fi
+  echo
+
+  echo '== CPU / memory =='
+  lscpu 2>/dev/null | grep -E '^(Architecture|CPU\(s\)|Model name|Thread|Core|Socket|Virtualization):' || true
+  free -h 2>/dev/null || true
+  if [[ -x /usr/sbin/swapon ]]; then /usr/sbin/swapon --show 2>/dev/null || true; elif [[ -x /sbin/swapon ]]; then /sbin/swapon --show 2>/dev/null || true; else cat /proc/swaps 2>/dev/null || true; fi
+  zramctl 2>/dev/null || true
+  echo
+
+  echo '== Graphics =='
+  lspci -nnk 2>/dev/null | grep -EA3 'VGA|3D|Display' || true
+  command -v glxinfo >/dev/null 2>&1 && glxinfo -B 2>/dev/null | grep -E 'OpenGL vendor|OpenGL renderer|OpenGL core profile version' || true
+  echo
+
+  echo '== Storage =='
+  lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINTS,MODEL 2>/dev/null || true
+  df -hT / /boot/efi 2>/dev/null || df -hT / 2>/dev/null || true
+  echo
+
+  echo '== Network state (privacy-safe) =='
+  nmcli -f DEVICE,TYPE,STATE device status 2>/dev/null || true
+  printf 'NetworkManager: %s\n' "$(systemctl is-active NetworkManager.service 2>/dev/null || true)"
+  echo
+
+  echo '== Power / firmware =='
+  command -v powerprofilesctl >/dev/null 2>&1 && { printf 'Power profile: '; powerprofilesctl get 2>/dev/null || true; } || true
+  if [[ -d /sys/class/power_supply ]]; then
+    for b in /sys/class/power_supply/BAT*; do
+      [[ -d "$b" ]] || continue
+      printf '%s capacity=%s%% status=%s\n' "$(basename "$b")" "$(cat "$b/capacity" 2>/dev/null || echo '?')" "$(cat "$b/status" 2>/dev/null || echo '?')"
+    done
+  fi
+  command -v fwupdmgr >/dev/null 2>&1 && fwupdmgr get-devices --no-pager 2>/dev/null | head -80 || true
+  echo
+
+  echo '== Security =='
+  ufw_bin="$(spectre_find_admin_cmd ufw || true)"; [[ -n "$ufw_bin" ]] && "$ufw_bin" status verbose 2>/dev/null | sed -E '/(^|[[:space:]])([0-9]{1,3}\.){3}[0-9]{1,3}([[:space:]]|$)/d' || true
+  aa_bin="$(spectre_find_admin_cmd aa-status || true)"; [[ -n "$aa_bin" ]] && "$aa_bin" 2>/dev/null | head -30 || true
+  echo
+
+  echo '== Failed services =='
+  systemctl --failed --no-pager 2>/dev/null || true
+  echo
+
+  echo '== Spectre status =='
+  spectre-status 2>&1 || true
+  echo
+
+  if [[ -f /etc/spectre-installation ]]; then
+    echo '== Installed-system health =='
+    spectre-installed-health 2>&1 || true
+    echo
+  fi
+
+  echo '== Recent boot errors =='
+  journalctl -b -p err..alert --no-pager -n 120 2>/dev/null || echo 'System journal is not readable by this account.'
+  echo
+
+  echo '== GNOME Shell warnings =='
+  journalctl --user -b -o cat --no-pager 2>/dev/null | grep -Ei '(gnome-shell|Spectre (Panel|Insight)).*(error|exception|failed)' | tail -60 || true
+} | sanitize > "$out"
+
+chmod 0600 "$out"
+printf '[ok] Support report created:\n%s\n' "$out"
+printf 'Review the report before sharing it.\n'

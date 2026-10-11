@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Spectre DING runtime reload — RC5.6.2
+#
+# DING's GNOME Shell extension supervises a separate GTK desktop process and
+# relaunches it if it exits.  Restart only that user-owned GTK process after a
+# monitor geometry or GTK theme transition so its desktop windows/menu rebuild
+# with current geometry and light/dark settings.  Never disable the extension;
+# this keeps Spectre's Shell fallback globally suppressed while DING owns the
+# desktop and avoids a transient dual-provider window.
+set -u
+
+reason='manual'
+if [[ "${1:-}" == '--reason' ]]; then
+    reason="${2:-manual}"
+fi
+
+uid="$(id -u)"
+pattern='ding@rastersoft.com/app/ding.js'
+
+mapfile -t pids < <(pgrep -u "$uid" -f "$pattern" 2>/dev/null || true)
+if (( ${#pids[@]} == 0 )); then
+    exit 0
+fi
+
+for pid in "${pids[@]}"; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    [[ "$pid" != "$$" ]] || continue
+    kill -TERM "$pid" 2>/dev/null || true
+done
+
+# DING's extension is responsible for relaunching the process.  This helper is
+# intentionally non-blocking and never manipulates enabled-extensions state.
+logger -t spectre-ding-reload "requested DING GTK reload reason=$reason" 2>/dev/null || true
+exit 0

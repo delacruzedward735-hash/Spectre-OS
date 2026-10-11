@@ -1,0 +1,24 @@
+[Unit]
+Description=Spectre OS installed-account rootless Podman subordinate ID provisioning
+After=local-fs.target systemd-sysusers.service spectre-installed-sanitize.service
+StartLimitIntervalSec=180
+StartLimitBurst=4
+Before=display-manager.service gdm3.service
+ConditionPathExists=/usr/local/bin/spectre-toolhub
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/spectre-rootless-podman-provision.py
+User=root
+Group=root
+NoNewPrivileges=no
+ProtectHome=true
+PrivateTmp=true
+ProtectSystem=true
+ReadWritePaths=/etc /var/backups/spectre-rootless-podman /run/lock
+Restart=on-failure
+RestartSec=15s
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -u
+
+# The desktop shortcut is a live-session convenience only. Installed owner
+# accounts have a different username and therefore do not receive it.
+[[ "$(id -un 2>/dev/null || true)" == "spectre" ]] || exit 0
+APP="/usr/share/applications/com.spectre.Installer.desktop"
+[[ -f "$APP" ]] || exit 0
+[[ -x /usr/local/bin/spectre-installer-launcher ]] || exit 0
+
+DESKTOP_DIR="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+[[ -n "$DESKTOP_DIR" ]] || DESKTOP_DIR="$HOME/Desktop"
+mkdir -p "$DESKTOP_DIR"
+
+DST="$DESKTOP_DIR/Install Spectre OS.desktop"
+cp -f "$APP" "$DST"
+chmod 0755 "$DST"
+
+if command -v gio >/dev/null 2>&1; then
+  gio set "$DST" metadata::trusted true >/dev/null 2>&1 || true
+fi
+exit 0

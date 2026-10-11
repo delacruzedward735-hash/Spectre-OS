@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -u
+
+# Live-session-only convenience setup. It never partitions or installs anything;
+# it only makes the already-authorized installer easy to find.
+if [[ ! -f /run/live/medium/live/filesystem.squashfs && ! -f /lib/live/mount/medium/live/filesystem.squashfs ]]; then
+  exit 0
+fi
+
+# Let the normal Spectre style establish its deterministic dock first.
+/usr/local/bin/spectre-gnome-style >/dev/null 2>&1 || true
+
+# Live media is intentionally passwordless and should never strand the user at
+# a lock screen. These settings are session-local and are not copied to the
+# installed owner's account.
+gsettings set org.gnome.desktop.screensaver lock-enabled false >/dev/null 2>&1 || true
+gsettings set org.gnome.desktop.session idle-delay 'uint32 0' >/dev/null 2>&1 || true
+
+app_id='com.spectre.Installer.desktop'
+app='/usr/share/applications/com.spectre.Installer.desktop'
+[[ -f "$app" ]] || exit 0
+
+desktop="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+[[ -n "$desktop" ]] || desktop="$HOME/Desktop"
+mkdir -p "$desktop"
+launcher="$desktop/Install Spectre OS.desktop"
+cp -f "$app" "$launcher" 2>/dev/null || true
+chmod 0755 "$launcher" 2>/dev/null || true
+gio set "$launcher" metadata::trusted true >/dev/null 2>&1 || true
+
+# Pin the installer at the front of the live dock only. The installed system
+# removes this autostart helper and the installer itself before first boot.
+python3 - "$app_id" <<'PY' >/dev/null 2>&1 || true
+import ast, subprocess, sys
+app = sys.argv[1]
+try:
+    raw = subprocess.check_output(['gsettings','get','org.gnome.shell','favorite-apps'], text=True).strip()
+    values = ast.literal_eval(raw)
+    if app in values:
+        values.remove(app)
+    values.insert(0, app)
+    subprocess.run(['gsettings','set','org.gnome.shell','favorite-apps',repr(values)], check=False)
+except Exception:
+    pass
+PY

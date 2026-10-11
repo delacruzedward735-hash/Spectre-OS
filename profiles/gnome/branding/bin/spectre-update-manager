@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""Spectre Update Manager — clear, Mint-inspired update review UI.
+
+It never parses shell input and delegates privileged work to the validated
+spectre-update backend through pkexec. Selected package names are validated by
+the backend again before apt is invoked.
+"""
+from __future__ import annotations
+import os, re, subprocess, threading
+from dataclasses import dataclass
+import gi
+gi.require_version('Gtk','4.0'); gi.require_version('Adw','1')
+from gi.repository import Adw, Gio, GLib, Gtk
+
+APP_ID='com.spectre.UpdateManager'; BACKEND='/usr/local/sbin/spectre-update'
+# APT's status-fd events describe the *current APT operation*, not an
+# end-to-end weighted ETA. Only display percentages actually emitted by APT.
+_APT_STATUS = re.compile(r'^(dlstatus|pmstatus|pmerror|pmconffile):(.+?):([0-9]+(?:\.[0-9]+)?):(.*)$')
+
+def parse_progress_line(line):
+    line = line.strip()
+    if line.startswith('SPECTRE_STAGE\t'):
+        stage = line.partition('\t')[2]
+        return ('stage', stage, None, '') if stage in ('refresh', 'install') else None
+    match = _APT_STATUS.fullmatch(line)
+    if not match:
+        return None
+    kind, _package, raw, message = match.groups()
+    if kind in ('pmerror', 'pmconffile'):
+        return ('error', kind, None, message)
+    stage = 'download' if kind == 'dlstatus' else 'install'
+    return ('percent', stage, max(0., min(100., float(raw))), message)
+
+@dataclass
+class Update: name:str; old:str; new:str; arch:str; category:str
+
+class App(Adw.Application):
+ def __init__(self):
+  super().__init__(application_id=APP_ID); self.items=[]; self.checks={}; self.busy=False
+ def do_activate(self):
+  if self.props.active_window: self.props.active_window.present(); return
+  self.win=Adw.ApplicationWindow(application=self,title='Spectre Update Manager'); self.win.set_default_size(900,700)
+  tv=Adw.ToolbarView(); hb=Adw.HeaderBar(); hb.set_title_widget(Adw.WindowTitle(title='Spectre Update Manager',subtitle='Security, system and application updates')); tv.add_top_bar(hb)
+  self.refresh_btn=Gtk.Button(icon_name='view-refresh-symbolic',tooltip_text='Refresh package metadata'); self.refresh_btn.connect('clicked',lambda *_: self._privileged(['--refresh'],True)); hb.pack_start(self.refresh_btn)
+  self.stack=Adw.ViewStack(); switcher=Adw.ViewSwitcher(stack=self.stack); hb.set_title_widget(switcher)
+  updates=self._updates_page(); history=self._history_page(); self.stack.add_titled(updates,'updates','Updates'); self.stack.add_titled(history,'history','History')
+  tv.set_content(self.stack); self.win.set_content(tv); self.win.present(); self._load_updates(); self._load_history()
+ def _updates_page(self):
+  root=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=12); root.set_margin_top(18); root.set_margin_bottom(18); root.set_margin_start(18); root.set_margin_end(18)
+  hero=Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,spacing=12)
+  labels=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=2); self.title=Gtk.Label(label='Checking for updates…'); self.title.set_xalign(0); self.title.add_css_class('title-2'); self.subtitle=Gtk.Label(label='Using Debian and security repositories'); self.subtitle.set_xalign(0); self.subtitle.add_css_class('dim-label'); labels.append(self.title); labels.append(self.subtitle); hero.append(labels); labels.set_hexpand(True)
+  self.select_all=Gtk.CheckButton(label='Select all'); self.select_all.connect('toggled',self._toggle_all); hero.append(self.select_all)
+  self.install=Gtk.Button(label='Install Selected'); self.install.add_css_class('suggested-action'); self.install.connect('clicked',self._install); hero.append(self.install); root.append(hero)
+  self.restart=Adw.Banner(title='A restart is recommended to finish installing updates.'); self.restart.set_revealed(os.path.exists('/var/run/reboot-required')); root.append(self.restart)
+  self.status=Adw.Banner(title=''); root.append(self.status)
+  # Visible only during operations; percentage belongs to the current APT
+  # phase. An indeterminate pulse is used until real status-fd data arrives.
+  self.progress_box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=5)
+  self.progress_title=Gtk.Label(label='Preparing…',xalign=0)
+  self.progress_title.add_css_class('heading')
+  self.progress_detail=Gtk.Label(label='',xalign=0)
+  self.progress_detail.add_css_class('dim-label')
+  self.progress_detail.set_wrap(True)
+  self.progress=Gtk.ProgressBar(show_text=True)
+  self.progress.set_text('Waiting for package manager…')
+  self.progress_box.append(self.progress_title)
+  self.progress_box.append(self.progress)
+  self.progress_box.append(self.progress_detail)
+  self.progress_box.set_visible(False)
+  root.append(self.progress_box)
+  self._real_progress=False
+  self._phase='refresh'
+  self.listbox=Gtk.ListBox(); self.listbox.set_selection_mode(Gtk.SelectionMode.NONE); self.listbox.add_css_class('boxed-list')
+  sc=Gtk.ScrolledWindow(); sc.set_policy(Gtk.PolicyType.NEVER,Gtk.PolicyType.AUTOMATIC); sc.set_vexpand(True); sc.set_child(self.listbox); root.append(sc)
+  footer=Gtk.Label(label='Spectre uses conservative APT upgrades and refuses package removals in automatic update operations.'); footer.set_wrap(True); footer.set_xalign(0); footer.add_css_class('dim-label'); root.append(footer)
+  return root
+ def _history_page(self):
+  root=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=12); root.set_margin_top(18); root.set_margin_bottom(18); root.set_margin_start(18); root.set_margin_end(18)
+  self.history=Gtk.ListBox(); self.history.set_selection_mode(Gtk.SelectionMode.NONE); self.history.add_css_class('boxed-list'); root.append(self.history); return root
+ def _clear(self,box):
+  c=box.get_first_child()
+  while c: n=c.get_next_sibling(); box.remove(c); c=n
+ def _load_updates(self):
+  def work():
+   try:
+    cp=subprocess.run([BACKEND,'--list-tsv'],text=True,capture_output=True,timeout=60)
+    values=[]
+    if cp.returncode==0:
+     for line in cp.stdout.splitlines():
+      parts=line.split('\t')
+      if len(parts)==5: values.append(Update(*parts))
+    GLib.idle_add(self._render,values,cp.stderr.strip())
+   except Exception as exc: GLib.idle_add(self._render,[],str(exc))
+  threading.Thread(target=work,daemon=True).start()
+ def _render(self,values,error=''):
+  self.items=values; self.checks={}; self._clear(self.listbox)
+  priority={'Security':0,'Core':1,'System':2,'Application':3}; values.sort(key=lambda x:(priority.get(x.category,9),x.name))
+  for u in values:
+   row=Adw.ActionRow(title=u.name,subtitle=f'{u.old}  →  {u.new}   •   {u.arch}')
+   check=Gtk.CheckButton(); check.set_active(True); check.set_valign(Gtk.Align.CENTER); check.connect('toggled',lambda *_: self._update_count()); row.add_prefix(check)
+   badge=Gtk.Label(label=u.category); badge.add_css_class('caption'); badge.set_valign(Gtk.Align.CENTER); row.add_suffix(badge); self.listbox.append(row); self.checks[u.name]=check
+  if not values:
+   self.listbox.append(Adw.ActionRow(title='Your system is up to date' if not error else 'Unable to read updates',subtitle=error or 'No package upgrades are currently cached.'))
+  sec=sum(1 for x in values if x.category=='Security'); self.title.set_text('Your system is up to date' if not values and not error else f'{len(values)} update(s) available')
+  self.subtitle.set_text((f'{sec} security update(s) • review the list before installing' if values else 'Last check uses the local package metadata cache'))
+  self.select_all.set_sensitive(bool(values)); self.install.set_sensitive(bool(values)); self.select_all.set_active(bool(values)); self.restart.set_revealed(os.path.exists('/var/run/reboot-required')); self._set_busy(False); return False
+ def _update_count(self):
+  n=sum(1 for c in self.checks.values() if c.get_active()); self.install.set_label(f'Install Selected ({n})' if n else 'Install Selected'); self.install.set_sensitive(n>0 and not self.busy)
+ def _toggle_all(self,button):
+  for c in self.checks.values(): c.set_active(button.get_active())
+ def _install(self,*_):
+  pkgs=[name for name,c in self.checks.items() if c.get_active()]
+  if pkgs: self._privileged(['--apply-packages',*pkgs],True)
+ def _set_busy(self,value):
+  self.busy=value; self.refresh_btn.set_sensitive(not value); self.select_all.set_sensitive(not value and bool(self.items)); self._update_count()
+ def _pulse_progress(self):
+  if not self.busy:
+   return GLib.SOURCE_REMOVE
+  if not self._real_progress:
+   self.progress.pulse()
+  return GLib.SOURCE_CONTINUE
+ def _show_progress(self,kind,stage,percent,detail):
+  if not self.busy:
+   return GLib.SOURCE_REMOVE
+  names={'refresh':'Refreshing package metadata','download':'Downloading updates','install':'Installing updates'}
+  if kind=='stage':
+   self._phase=stage
+   self._real_progress=False
+   self.progress.set_fraction(0)
+   self.progress.set_text('Waiting for package manager…')
+   self.progress_title.set_text(names[stage])
+   self.progress_detail.set_text('APT is preparing this operation.')
+  elif kind=='percent':
+   # apt-get emits dlstatus both for metadata refresh and for package downloads.
+   # Never label package downloads as another metadata refresh.
+   phase=('refresh' if stage=='download' and self._phase=='refresh' else stage)
+   if phase!=self._phase:
+    self._phase=phase
+    self.progress.set_fraction(0)
+   self._real_progress=True
+   self.progress.set_fraction(percent/100.0)
+   self.progress.set_text(f'{percent:.0f}%')
+   self.progress_title.set_text(names[phase])
+   if detail:
+    self.progress_detail.set_text(detail[:180])
+  elif kind=='error':
+   self.progress_detail.set_text(('Package configuration needs attention: ' if stage=='pmconffile' else 'APT error: ')+detail[:140])
+  return GLib.SOURCE_REMOVE
+ def _privileged(self,args,reload_after=False):
+  if self.busy:return
+  self._set_busy(True)
+  self.status.set_revealed(False)
+  self._real_progress=False
+  self._phase='refresh'
+  self.progress.set_fraction(0)
+  self.progress.set_text('Waiting for authorization…')
+  self.progress_title.set_text('Refreshing package metadata' if '--refresh' in args else 'Preparing selected updates')
+  self.progress_detail.set_text('Authorize this operation in the system dialog.')
+  self.progress_box.set_visible(True)
+  GLib.timeout_add(150,self._pulse_progress)
+  def work():
+   ok=False; msg='Unknown package manager error'; last=''
+   try:
+    with subprocess.Popen(['pkexec',BACKEND,'--progress',*args],
+                          stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
+                          text=True,encoding='utf-8',errors='replace',bufsize=1) as proc:
+     last_event=None
+     for raw in proc.stdout:
+      line=raw.strip()
+      event=parse_progress_line(line)
+      if event:
+       # Only queue changed progress (APT may report thousands of callbacks).
+       key=(event[0],event[1],round(event[2]) if event[2] is not None else None,event[3] if event[0]=='error' else '')
+       if key != last_event:
+        GLib.idle_add(self._show_progress,*event)
+        last_event=key
+      elif line:
+       last=line[:240]
+     code=proc.wait()
+     ok=(code==0)
+     msg=last or ('APT completed' if ok else f'Exit {code}')
+     if code==126:
+      msg='Authorization cancelled or denied.'
+   except Exception as exc:
+    msg=str(exc)
+   GLib.idle_add(self._done,ok,msg,reload_after)
+  threading.Thread(target=work,daemon=True).start()
+ def _done(self,ok,msg,reload_after):
+  self.progress_box.set_visible(False)
+  self.status.set_title(('Update operation completed. ' if ok else 'Update operation failed. ')+msg[:180])
+  self.status.set_revealed(True)
+  self._set_busy(False)
+  if reload_after: self._load_updates(); self._load_history()
+  return GLib.SOURCE_REMOVE
+ def _load_history(self):
+  self._clear(self.history)
+  cp=subprocess.run([BACKEND,'--history'],text=True,capture_output=True)
+  if cp.returncode==0 and cp.stdout.strip():
+   for line in cp.stdout.splitlines():
+    name,_,when=line.partition('\t'); self.history.append(Adw.ActionRow(title=name,subtitle=when))
+  else: self.history.append(Adw.ActionRow(title='No update history yet',subtitle='Completed Spectre update operations will appear here.'))
+if __name__=='__main__': raise SystemExit(App().run(None))
